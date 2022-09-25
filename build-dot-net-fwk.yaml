@@ -1,0 +1,62 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+
+name: Build .NET Framework Web Apps
+
+on:
+  workflow_call:
+    inputs:
+      APP:
+        required: true
+        type: string
+      SLOT:
+        required: true
+        type: string
+      DEPLOY_ENV:
+        required: true
+        type: string
+      BUILD_CONFIG:
+        required: true
+        type: string
+      BUILD_PROJECT:
+        required: true
+        type: string
+    secrets:
+      SSH_KEY:
+        required: true
+
+jobs:
+  build-dot-net-fwk:
+    # windows-2019 to build ASP.NET Framework 4.8
+    runs-on: windows-2019
+    
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+          ssh-key: ${{secrets.SSH_KEY}}
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v1.0.5
+
+      - name: Restore NuGet packages
+        run: nuget restore
+        
+      - name: Setup MSBuild path
+        uses: microsoft/setup-msbuild@v1.0.2
+
+      - name: Build ${{inputs.BUILD_PROJECT}}
+        run: msbuild ${{inputs.BUILD_PROJECT}} /nologo /verbosity:m /t:Build /t:pipelinePreDeployCopyAllFilesToOneFolder /p:Configuration=${{inputs.BUILD_CONFIG}} /p:_PackageTempDir="\published\"
+
+      - name: Copy environment specific files in place.
+        uses: SurePassId/copy-web-env-files@main
+        with:
+          deployment-environment: ${{inputs.DEPLOY_ENV}}
+          path: '/published'
+
+      - name: Upload build artifact app-${{inputs.APP}}-${{inputs.SLOT}} for deployment jobs
+        uses: actions/upload-artifact@v2
+        with:
+          name: app-${{inputs.APP}}-${{inputs.SLOT}}
+          path: '/published/**'
