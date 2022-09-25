@@ -55,7 +55,7 @@ jobs:
           deployment-environment: ${{inputs.DEPLOY_ENV}}
           path: '/published'
 
-      - name: Upload build artifact app-${{inputs.APP}}-${{inputs.SLOT}} for deployment jobs
+      - name: Upload build artifact app-${{inputs.APP}}-${{inputs.SLOT}} for deployment jobs.
         uses: actions/upload-artifact@v2
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
