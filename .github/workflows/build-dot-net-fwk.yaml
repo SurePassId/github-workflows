@@ -46,6 +46,9 @@ jobs:
       - name: Setup MSBuild path
         uses: microsoft/setup-msbuild@v1
 
+      - name: DotNet restore
+        run: dotnet restore
+        
       - name: Build ${{inputs.BUILD_PROJECT}}
         run: msbuild ${{inputs.BUILD_PROJECT}} /nologo /verbosity:m /t:Build /t:pipelinePreDeployCopyAllFilesToOneFolder /p:Configuration=${{inputs.BUILD_CONFIG}} /p:_PackageTempDir="\published\"
 
