@@ -32,19 +32,19 @@ jobs:
     
     steps:
       - name: Checkout repository and submodules
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           submodules: recursive
           ssh-key: ${{secrets.SSH_KEY}}
 
       - name: Setup NuGet
-        uses: NuGet/setup-nuget@v1.0.5
+        uses: NuGet/setup-nuget@v1
 
       - name: Restore NuGet packages
         run: nuget restore
         
       - name: Setup MSBuild path
-        uses: microsoft/setup-msbuild@v1.0.2
+        uses: microsoft/setup-msbuild@v1
 
       - name: Build ${{inputs.BUILD_PROJECT}}
         run: msbuild ${{inputs.BUILD_PROJECT}} /nologo /verbosity:m /t:Build /t:pipelinePreDeployCopyAllFilesToOneFolder /p:Configuration=${{inputs.BUILD_CONFIG}} /p:_PackageTempDir="\published\"
@@ -56,7 +56,7 @@ jobs:
           path: '/published'
 
       - name: Upload build artifact app-${{inputs.APP}}-${{inputs.SLOT}} for deployment jobs.
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
           path: '/published/**'
