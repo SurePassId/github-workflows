@@ -31,7 +31,7 @@ jobs:
       
     steps:
       - name: Download artifact app-${{inputs.APP}}-${{inputs.SLOT}} from the build job
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v3
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
 
