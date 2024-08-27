@@ -1,0 +1,72 @@
+
+name: Build and deploy to SANDBOXVM
+
+on:
+  workflow_call:
+
+env:
+  PUBLISH_DIR: '${{ github.workspace }}\publish'
+
+jobs:
+  RunPostmanTests:
+    runs-on: [self-hosted, windows-build-vm]
+
+    steps:
+      - name: Setup postman workflow variables
+        run: |
+          $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+          if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
+            Throw "Invalid branch: ${{ github.ref }}"
+          }
+
+          switch ("${{ github.repository }}") {
+            "SurePassId/SurePassIdLegacyMfaServer" {
+              Write-Host "Postman is not configured for: ${{ github.repository }}"
+            }
+            "SurePassId/SurePassIdMfaServer" {
+              echo "POSTMAN_COLLECTION_ID=4401059-378d5a1c-52ae-4f51-b3b1-da7d644de4d8" >> "${{ github.env }}"
+
+              switch ($SiteEnv) {
+                "alpha" {
+                  echo "POSTMAN_ENVIRONMENT_ID=4401059-ca7694ba-49fb-4815-b8ca-685f47a8ed3f" >> "${{ github.env }}"
+                }
+                default {
+                  Write-Host "Postman is not configured for: ${{ github.repository }} on $SiteEnv environment"
+                }
+              }
+            }
+            "SurePassId/SurePassIdPushServer" {
+              Write-Host "Postman is not configured for: ${{ github.repository }}"
+            }
+            default {
+              Throw "Invalid repository: ${{ github.repository }}"
+            }
+          }
+
+      - name: Checkout postman files
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: SurePassId/PostmanFiles
+          token: ${{ secrets.GH_ACTIONS_PAT }}
+  
+      - name: Install Postman CLI
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        run: |
+          powershell.exe -NoProfile `
+                         -InputFormat None `
+                         -ExecutionPolicy AllSigned `
+                         -Command "[System.Net.ServicePointManager]::SecurityProtocol = 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://dl-cli.pstmn.io/install/win64.ps1'))"
+
+      - name: Login to Postman CLI
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
+
+      - name: Run API tests
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        run: |
+          postman collection run `
+                  ${{ env.POSTMAN_COLLECTION_ID }} `
+                  --environment ${{ env.POSTMAN_ENVIRONMENT_ID }} `
+                  --globals workspace.postman_globals.json `
+                  --verbose
