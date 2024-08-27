@@ -3,6 +3,15 @@ name: Build and deploy to SANDBOXVM
 
 on:
   workflow_call:
+    secrets: 
+      GH_ACTIONS_PAT:
+        required: true
+      SANDBOX_VM_USERNAME:
+        required: true
+      SANDBOX_VM_PASSWORD:
+        required: true
+      SANDBOX_VM_HOSTNAME:
+        required: true
 
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'

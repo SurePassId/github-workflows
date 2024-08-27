@@ -3,6 +3,11 @@ name: Build and deploy to SANDBOXVM
 
 on:
   workflow_call:
+    secrets: 
+      GH_ACTIONS_PAT:
+        required: true
+      POSTMAN_API_KEY:
+        required: true
 
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
