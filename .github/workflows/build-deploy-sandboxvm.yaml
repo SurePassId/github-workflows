@@ -31,14 +31,14 @@ jobs:
 
           switch ("${{ github.repository }}") {
             "SurePassId/SurePassIdLegacyMfaServer" {
-              echo "DOT_NET_TYPE=framework48" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
               echo "APP_NAME=mfa" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePass.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\SurePassIdLegacyMfaServer\SurePassIdLegacyMfaServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> "${{ github.env }}"
             }
             "SurePassId/SurePassIdMfaServer" {
-              echo "DOT_NET_TYPE=net8" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               echo "APP_NAME=fido2" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> "${{ github.env }}"
@@ -46,14 +46,14 @@ jobs:
               echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
             }
             "SurePassId/SurePassIdPushServer" {
-              echo "DOT_NET_TYPE=framework48" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
               echo "APP_NAME=push" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\PushServer.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\PushServer\PushServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> "${{ github.env }}"
             }
             "SurePassId/IdentityProvider" {
-              echo "DOT_NET_TYPE=net8" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "APP_NAME=oidc" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
@@ -77,11 +77,11 @@ jobs:
       # .NET Framework steps #
       ########################
       - name: Setup MSBuild path
-        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        if: ${{ env.DOT_NET_TYPE == 'framework' }}
         uses: microsoft/setup-msbuild@v2
 
       - name: Restore the solution's NuGet packages.
-        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        if: ${{ env.DOT_NET_TYPE == 'framework' }}
         run: |
           msbuild ${{env.APP_SOLUTION}} `
                   -restore `
@@ -89,7 +89,7 @@ jobs:
                   -property:RestorePackagesConfig=true
 
       - name: Build ${{ env.APP_PROJECT }}
-        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        if: ${{ env.DOT_NET_TYPE == 'framework' }}
         run: |
           msbuild ${{env.APP_PROJECT}} `
                   -target:rebuild `
@@ -106,19 +106,19 @@ jobs:
       # .NET Core steps #
       ###################
       - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        if: ${{ env.DOT_NET_TYPE == 'core' }}
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore NuGet packages.
-        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        if: ${{ env.DOT_NET_TYPE == 'core' }}
         run: |
           dotnet restore "${{ env.APP_SOLUTION }}" `
                  --source https://api.nuget.org/v3/index.json
 
       - name: Build ${{ env.APP_PROJECT }}
-        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        if: ${{ env.DOT_NET_TYPE == 'core' }}
         run: |
           dotnet publish "${{ env.APP_PROJECT }}" `
                  --configuration Release `
