@@ -1,0 +1,243 @@
+
+name: Build and deploy to SANDBOXVM
+
+on:
+  workflow_call:
+    secrets:
+      GH_ACTIONS_PAT:
+        required: true
+
+env:
+  PUBLISH_DIR: '${{ github.workspace }}\publish'
+
+jobs:
+  BuildAndDeployToSandboxVM:
+    runs-on: [self-hosted, windows-build-vm]
+
+    steps:
+      - name: Setup workflow variables
+        run: |
+          $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+          if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
+            Throw "Invalid branch: ${{ github.ref }}"
+          }
+          echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
+
+          switch ("${{ github.repository }}") {
+            "SurePassId/SurePassIdLegacyMfaServer" {
+              echo "DOT_NET_TYPE=framework48" >> "${{ github.env }}"
+              echo "APP_NAME=mfa" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePass.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\SurePassIdLegacyMfaServer\SurePassIdLegacyMfaServer.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> "${{ github.env }}"
+            }
+            "SurePassId/SurePassIdMfaServer" {
+              echo "DOT_NET_TYPE=net8" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "APP_NAME=fido2" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\SurePassIdMfaServer\SurePassIdMfaServer.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
+            }
+            "SurePassId/SurePassIdPushServer" {
+              echo "DOT_NET_TYPE=framework48" >> "${{ github.env }}"
+              echo "APP_NAME=push" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\PushServer.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\PushServer\PushServer.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> "${{ github.env }}"
+            }
+            "SurePassId/IdentityProvider" {
+              echo "DOT_NET_TYPE=net8" >> "${{ github.env }}"
+              echo "APP_NAME=oidc" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=\bin\IdentityProvider.dll" >> "${{ github.env }}"
+            }
+            default {
+              Throw "Invalid repository: ${{ github.repository }}"
+            }
+          }
+
+      ##################
+      # Checkout code. #
+      ##################
+      - name: Checkout ${{ github.repository }} and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.GH_ACTIONS_PAT }}
+
+      ########################
+      # .NET Framework steps #
+      ########################
+      - name: Setup MSBuild path
+        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore the solution's NuGet packages.
+        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        run: |
+          msbuild ${{env.APP_SOLUTION}} `
+                  -restore `
+                  -verbosity:minimal `
+                  -property:RestorePackagesConfig=true
+
+      - name: Build ${{ env.APP_PROJECT }}
+        if: ${{ env.DOT_NET_TYPE == 'framework48' }}
+        run: |
+          msbuild ${{env.APP_PROJECT}} `
+                  -target:rebuild `
+                  -verbosity:minimal `
+                  -property:DeployOnBuild=True `
+                  -property:Configuration=Release `
+                  -property:DeployTarget=WebPublish `
+                  -property:DeleteExistingFiles=False `
+                  -property:PublishProvider=FileSystem `
+                  -property:WebPublishMethod=FileSystem `
+                  -property:PublishUrl="${{ env.PUBLISH_DIR }}"
+
+      ###################
+      # .NET Core steps #
+      ###################
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore NuGet packages.
+        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        run: |
+          dotnet restore "${{ env.APP_SOLUTION }}" `
+                 --source https://api.nuget.org/v3/index.json
+
+      - name: Build ${{ env.APP_PROJECT }}
+        if: ${{ env.DOT_NET_TYPE == 'net8' }}
+        run: |
+          dotnet publish "${{ env.APP_PROJECT }}" `
+                 --configuration Release `
+                 --output ${{ env.PUBLISH_DIR }} `
+                 -p:EnvironmentName=mfa-${{ env.SITE_ENV }}
+
+      ####################################
+      # Copy envirinment specific files. #
+      ####################################
+      - name: Copy environment specific files in place.
+        uses: SurePassId/copy-web-env-files@main
+        with:
+          deployment-environment: ${{ env.SITE_ENV }}
+          path: "${{ env.PUBLISH_DIR }}"
+
+      ##############################
+      # Generate Release Tag Name. #
+      ##############################
+      - name: Generate Release Tag Name
+        run: |
+          $assembly = [System.Reflection.Assembly]::LoadFile("${{ env.PUBLISH_DIR }}\${{ env.APP_ASSEMBLY }}")
+          $version = $assembly.GetName().Version
+          echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
+
+      #######################################
+      # Tag the commit with the release tag #
+      #######################################
+      - name: Tag the commit with the release tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {APP_TAG_NAME} = process.env          
+            github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/tags/${APP_TAG_NAME}`,
+                sha: context.sha
+            })
+
+      #############################
+      # Deploy files to sandboxvm #
+      #############################
+      - name: Deploy files to sandboxvm and restart ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com.
+        run: |
+          $App = "${{ env.APP_NAME }}"
+          $SiteEnv = "${{ env.SITE_ENV }}"
+          $SiteDomainName = "$App-$SiteEnv.surepassid.com"
+          $SourcePath = "${{ env.PUBLISH_DIR }}\*"
+          $DestinationPath = "E:\iis_sites\$SiteEnv\$SiteDomainName"
+          
+          $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
+          $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
+          $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
+
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+          $session = New-PSSession -ComputerName $azure_vm -Credential $credential
+
+          Write-Host "================================================================================"
+          Write-Host "Compress the source files"
+          Write-Host "================================================================================"
+          $zipFilePath = "${env:TEMP}\deploy-$SiteDomainName.7z"
+          #Compress-Archive -Path $SourcePath -DestinationPath $zipFilePath -Force
+          &'C:\Program Files\7-Zip\7z.exe' a -t7z $zipFilePath $SourcePath
+
+          Write-Host "================================================================================"
+          Write-Host "Stopping $SiteDomainName"
+          Write-Host "================================================================================"
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($SiteDomainName)
+              C:\Windows\System32\inetsrv\appcmd stop site $SiteDomainName
+              C:\Windows\System32\inetsrv\appcmd stop apppool $SiteDomainName
+          } -ArgumentList $SiteDomainName
+
+          Write-Host "================================================================================"
+          Write-Host "Backup $SiteDomainName folder on the remote machine to a zip file."
+          Write-Host "================================================================================"
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($DestinationPath)
+              Start-Sleep -Seconds 3
+              $currentDateTime = Get-Date
+              $formattedDateTime = $currentDateTime.ToString("yyyy-MM-dd_HHmmss")
+              # Compress-Archive -Path "${DestinationPath}" -DestinationPath "${DestinationPath}_$formattedDateTime.zip"
+              &'C:\Program Files\7-Zip\7z.exe' a -t7z "${DestinationPath}_$formattedDateTime.7z" "${DestinationPath}" -xr!Trace
+          } -ArgumentList $DestinationPath
+
+          Write-Host "================================================================================"
+          Write-Host "Keep only the last 3 Backups for $SiteDomainName on the remote machine."
+          Write-Host "================================================================================"
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($DestinationPath)
+              # Get all files matching the pattern ${DestinationPath}_*.7z
+              $files = Get-ChildItem -Path "${DestinationPath}_*.7z" | Sort-Object LastWriteTime -Descending
+              # Skip the first 3 files and delete the rest
+              $files | Select-Object -Skip 3 | ForEach-Object {
+                  Remove-Item -Path $_.FullName -Force
+              }
+          } -ArgumentList $DestinationPath
+
+          Write-Host "================================================================================"
+          Write-Host "Deploying to $DestinationPath on $SiteDomainName"
+          Write-Host "================================================================================"
+          Copy-Item -Path $zipFilePath `
+                    -Destination $DestinationPath\deploy-$SiteDomainName.7z `
+                    -ToSession $session `
+                    -Recurse `
+                    -Force
+
+          Write-Host "================================================================================"
+          Write-Host "Extract the compressed file on the remote machine"
+          Write-Host "================================================================================"
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($DestinationPath, $SiteDomainName)
+              # Expand-Archive -Path "${DestinationPath}\deploy.zip" -DestinationPath $DestinationPath -Force
+              &'C:\Program Files\7-Zip\7z.exe' x "${DestinationPath}\deploy-$SiteDomainName.7z" -o"${DestinationPath}" -y
+              # Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
+          } -ArgumentList $DestinationPath, $SiteDomainName
+
+          Write-Host "================================================================================"
+          Write-Host "Starting $SiteDomainName"
+          Write-Host "================================================================================"
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($SiteDomainName)
+              C:\Windows\System32\inetsrv\appcmd start apppool $SiteDomainName
+              C:\Windows\System32\inetsrv\appcmd start site $SiteDomainName
+          } -ArgumentList $SiteDomainName
+
+          Remove-PSSession $session
