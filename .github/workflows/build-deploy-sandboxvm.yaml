@@ -201,7 +201,6 @@ jobs:
               Start-Sleep -Seconds 3
               $currentDateTime = Get-Date
               $formattedDateTime = $currentDateTime.ToString("yyyy-MM-dd_HHmmss")
-              # Compress-Archive -Path "${DestinationPath}" -DestinationPath "${DestinationPath}_$formattedDateTime.zip"
               &'C:\Program Files\7-Zip\7z.exe' a -t7z "${DestinationPath}_$formattedDateTime.7z" "${DestinationPath}" -xr!Trace
           } -ArgumentList $DestinationPath
 
@@ -212,7 +211,7 @@ jobs:
               param ($DestinationPath)
               # Get all files matching the pattern ${DestinationPath}_*.7z
               $files = Get-ChildItem -Path "${DestinationPath}_*.7z" | Sort-Object LastWriteTime -Descending
-              # Skip the first 3 files and delete the rest
+              # Skip the first 3 files and delete the rest.
               $files | Select-Object -Skip 3 | ForEach-Object {
                   Remove-Item -Path $_.FullName -Force
               }
@@ -232,9 +231,8 @@ jobs:
           Write-Host "================================================================================"
           Invoke-Command -Session $session -ScriptBlock {
               param ($DestinationPath, $SiteDomainName)
-              # Expand-Archive -Path "${DestinationPath}\deploy.zip" -DestinationPath $DestinationPath -Force
               &'C:\Program Files\7-Zip\7z.exe' x "${DestinationPath}\deploy-$SiteDomainName.7z" -o"${DestinationPath}" -y
-              # Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
+              Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
           } -ArgumentList $DestinationPath, $SiteDomainName
 
           Write-Host "================================================================================"
