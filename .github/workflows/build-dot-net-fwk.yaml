@@ -28,8 +28,8 @@ on:
 jobs:
   build-dot-net-fwk:
     # windows-2019 to build ASP.NET Framework 4.8
-    #runs-on: windows-2019
-    runs-on: [self-hosted, windows-build-vm]
+    runs-on: windows-2019
+    # runs-on: [self-hosted, windows-build-vm]
     
     steps:
       - name: Checkout repository and submodules
