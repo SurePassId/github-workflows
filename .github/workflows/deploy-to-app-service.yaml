@@ -24,7 +24,8 @@ on:
 
 jobs:
   deploy-to-app-service:
-    runs-on: windows-latest
+    #runs-on: windows-latest
+    runs-on: [self-hosted, windows-build-vm]
     environment:
       name: app-${{inputs.APP}}-${{inputs.DEPLOY_ENV}}-${{inputs.REGION}}/${{inputs.SLOT}}
       url: ${{steps.deploy-to-webapp.outputs.webapp-url}}

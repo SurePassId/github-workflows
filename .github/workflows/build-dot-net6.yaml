@@ -25,7 +25,8 @@ on:
 
 jobs:
   build-dot-net6:
-    runs-on: windows-latest
+    #runs-on: windows-latest
+    runs-on: [self-hosted, windows-build-vm]
 
     steps:
       - name: Checkout repo and submodules
