@@ -1,5 +1,5 @@
 
-name: Build .NET6 Web Apps
+name: Build .NET8 Web Apps
 
 on:
   workflow_call:
