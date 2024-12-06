@@ -3,6 +3,12 @@ name: Build and deploy to SANDBOXVM
 
 on:
   workflow_call:
+    inputs:
+      DEPLOY_APP_NAME:
+        description: 'The app name to deploy.'
+        type: string
+        required: false
+        default: ''
     secrets: 
       GH_ACTIONS_PAT:
         required: true
@@ -54,10 +60,24 @@ jobs:
             }
             "SurePassId/IdentityProvider" {
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "APP_NAME=oidc" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=\bin\IdentityProvider.dll" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              switch ("${{ inputs.DEPLOY_APP_NAME }}") {
+                "oidc" {
+                  echo "APP_NAME=oidc" >> "${{ github.env }}"
+                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
+                  echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
+                  echo "APP_ASSEMBLY=\bin\IdentityProvider.dll" >> "${{ github.env }}"
+                }
+                "oidc-client" {
+                  echo "APP_NAME=oidc-client" >> "${{ github.env }}"
+                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
+                  echo "APP_PROJECT=.\IdentityProviderTestApp\IdentityProviderTestApp.csproj" >> "${{ github.env }}"
+                  echo "APP_ASSEMBLY=\bin\IdentityProviderTestApp.dll" >> "${{ github.env }}"
+                }
+                default {
+                  Throw "Invalid app name for SurePassId/IdentityProvider: ${{ inputs.IN_APP_NAME }}"
+                }
+              }
             }
             default {
               Throw "Invalid repository: ${{ github.repository }}"
