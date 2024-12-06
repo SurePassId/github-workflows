@@ -75,7 +75,7 @@ jobs:
                   echo "APP_ASSEMBLY=\bin\IdentityProviderTestApp.dll" >> "${{ github.env }}"
                 }
                 default {
-                  Throw "Invalid app name for SurePassId/IdentityProvider: ${{ inputs.IN_APP_NAME }}"
+                  Throw "Invalid app name for SurePassId/IdentityProvider: ${{ inputs.DEPLOY_APP_NAME }}"
                 }
               }
             }
