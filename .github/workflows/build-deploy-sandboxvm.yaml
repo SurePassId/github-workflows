@@ -21,6 +21,7 @@ on:
 
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
+  TAG_REPOSITORY: true
 
 jobs:
   BuildAndDeployToSandboxVM:
@@ -69,6 +70,7 @@ jobs:
                   echo "APP_ASSEMBLY=IdentityProvider.dll" >> "${{ github.env }}"
                 }
                 "oidc-client" {
+                  echo "TAG_REPOSITORY=false" >> "${{ github.env }}"
                   echo "APP_NAME=oidc-client" >> "${{ github.env }}"
                   echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
                   echo "APP_PROJECT=.\IdentityProviderTestApp\IdentityProviderTestApp.csproj" >> "${{ github.env }}"
@@ -158,6 +160,7 @@ jobs:
       # Generate Release Tag Name. #
       ##############################
       - name: Generate Release Tag Name
+        if: ${{ env.TAG_REPOSITORY == 'true' }}
         run: |
           $assembly = [System.Reflection.Assembly]::LoadFile("${{ env.PUBLISH_DIR }}\${{ env.APP_ASSEMBLY }}")
           $version = $assembly.GetName().Version
@@ -168,6 +171,7 @@ jobs:
       #######################################
       - name: Tag the commit with the release tag
         uses: actions/github-script@v7
+        if: ${{ env.TAG_REPOSITORY == 'true' }}
         with:
           script: |
             const {APP_TAG_NAME} = process.env          
