@@ -22,6 +22,14 @@ on:
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
   TAG_REPOSITORY: true
+  ENV_NAME_PREFIX: 'mfa'
+  SITE_ENV: ''
+  DOT_NET_TYPE: ''
+  DOTNET_VERSION: ''
+  APP_NAME: ''
+  APP_SOLUTION: ''
+  APP_PROJECT: ''
+  APP_ASSEMBLY: ''
 
 jobs:
   BuildAndDeployToSandboxVM:
@@ -34,47 +42,48 @@ jobs:
           if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
             Throw "Invalid branch: ${{ github.ref }}"
           }
-          echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
+          echo "SITE_ENV=$SiteEnv" >> $GITHUB_ENV
 
           switch ("${{ github.repository }}") {
             "SurePassId/SurePassIdLegacyMfaServer" {
-              echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
-              echo "APP_NAME=mfa" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\SurePass.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\SurePassIdLegacyMfaServer\SurePassIdLegacyMfaServer.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=framework" >> $GITHUB_ENV
+              echo "APP_NAME=mfa" >> $GITHUB_ENV
+              echo "APP_SOLUTION=.\SurePass.sln" >> $GITHUB_ENV
+              echo "APP_PROJECT=.\SurePassIdLegacyMfaServer\SurePassIdLegacyMfaServer.csproj" >> $GITHUB_ENV
+              echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> $GITHUB_ENV
             }
             "SurePassId/SurePassIdMfaServer" {
-              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
-              echo "APP_NAME=fido2" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\SurePassIdMfaServer\SurePassIdMfaServer.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=core" >> $GITHUB_ENV
+              echo "DOTNET_VERSION=8.0.x" >> $GITHUB_ENV
+              echo "APP_NAME=fido2" >> $GITHUB_ENV
+              echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> $GITHUB_ENV
+              echo "APP_PROJECT=.\SurePassIdMfaServer\SurePassIdMfaServer.csproj" >> $GITHUB_ENV
+              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> $GITHUB_ENV
             }
             "SurePassId/SurePassIdPushServer" {
-              echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
-              echo "APP_NAME=push" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\PushServer.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\PushServer\PushServer.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=framework" >> $GITHUB_ENV
+              echo "APP_NAME=push" >> $GITHUB_ENV
+              echo "APP_SOLUTION=.\PushServer.sln" >> $GITHUB_ENV
+              echo "APP_PROJECT=.\PushServer\PushServer.csproj" >> $GITHUB_ENV
+              echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> $GITHUB_ENV
             }
             "SurePassId/IdentityProvider" {
-              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "ENV_NAME_PREFIX=oidc" >> $GITHUB_ENV
+              echo "DOT_NET_TYPE=core" >> $GITHUB_ENV
+              echo "DOTNET_VERSION=8.0.x" >> $GITHUB_ENV
               switch ("${{ inputs.DEPLOY_APP_NAME }}") {
                 "oidc" {
-                  echo "APP_NAME=oidc" >> "${{ github.env }}"
-                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
-                  echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
-                  echo "APP_ASSEMBLY=SurePassIdOidcServer.dll" >> "${{ github.env }}"
+                  echo "APP_NAME=oidc" >> $GITHUB_ENV
+                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> $GITHUB_ENV
+                  echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> $GITHUB_ENV
+                  echo "APP_ASSEMBLY=SurePassIdOidcServer.dll" >> $GITHUB_ENV
                 }
                 "oidc-client" {
-                  echo "TAG_REPOSITORY=false" >> "${{ github.env }}"
-                  echo "APP_NAME=oidc-client" >> "${{ github.env }}"
-                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
-                  echo "APP_PROJECT=.\IdentityProviderTestApp\IdentityProviderTestApp.csproj" >> "${{ github.env }}"
-                  echo "APP_ASSEMBLY=SurePassIdOidcClient.dll" >> "${{ github.env }}"
+                  echo "TAG_REPOSITORY=false" >> $GITHUB_ENV
+                  echo "APP_NAME=oidc-client" >> $GITHUB_ENV
+                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> $GITHUB_ENV
+                  echo "APP_PROJECT=.\IdentityProviderTestApp\IdentityProviderTestApp.csproj" >> $GITHUB_ENV
+                  echo "APP_ASSEMBLY=SurePassIdOidcClient.dll" >> $GITHUB_ENV
                 }
                 default {
                   Throw "Invalid app name for SurePassId/IdentityProvider: ${{ inputs.DEPLOY_APP_NAME }}"
@@ -145,7 +154,7 @@ jobs:
           dotnet publish "${{ env.APP_PROJECT }}" `
                  --configuration Release `
                  --output ${{ env.PUBLISH_DIR }} `
-                 -p:EnvironmentName=mfa-${{ env.SITE_ENV }}
+                 -p:EnvironmentName=${{ env.ENV_NAME_PREFIX }}-${{ env.SITE_ENV }}
 
       ####################################
       # Copy envirinment specific files. #
@@ -164,7 +173,7 @@ jobs:
         run: |
           $assembly = [System.Reflection.Assembly]::LoadFile("${{ env.PUBLISH_DIR }}\${{ env.APP_ASSEMBLY }}")
           $version = $assembly.GetName().Version
-          echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
+          echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> $GITHUB_ENV
 
       #######################################
       # Tag the commit with the release tag #
