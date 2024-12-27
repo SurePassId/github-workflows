@@ -22,7 +22,7 @@ on:
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
   TAG_REPOSITORY: true
-  ENV_NAME_PREFIX: 'mfa'
+  ENV_NAME: ''
   SITE_ENV: ''
   DOT_NET_TYPE: ''
   DOTNET_VERSION: ''
@@ -53,6 +53,7 @@ jobs:
               echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> "${{ github.env }}"
             }
             "SurePassId/SurePassIdMfaServer" {
+              echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               echo "APP_NAME=fido2" >> "${{ github.env }}"
@@ -68,7 +69,8 @@ jobs:
               echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> "${{ github.env }}"
             }
             "SurePassId/IdentityProvider" {
-              echo "ENV_NAME_PREFIX=oidc" >> "${{ github.env }}"
+              echo "ENV_NAME=Development" >> "${{ github.env }}"
+              #echo "ENV_NAME=oidc-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               switch ("${{ inputs.DEPLOY_APP_NAME }}") {
@@ -154,7 +156,7 @@ jobs:
           dotnet publish "${{ env.APP_PROJECT }}" `
                  --configuration Release `
                  --output ${{ env.PUBLISH_DIR }} `
-                 -p:EnvironmentName=${{ env.ENV_NAME_PREFIX }}-${{ env.SITE_ENV }}
+                 -p:EnvironmentName=${{ env.ENV_NAME }}
 
       ####################################
       # Copy envirinment specific files. #
