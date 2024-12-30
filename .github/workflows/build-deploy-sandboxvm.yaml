@@ -261,6 +261,13 @@ jobs:
           } -ArgumentList $DestinationPath
 
           Write-Host "================================================================================"
+          Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName"
+          Write-Host "================================================================================"
+          if (Test-Path -Path $DestinationPath) {
+            Remove-Item -Recurse -Force -Path $DestinationPath\*
+          }
+
+          Write-Host "================================================================================"
           Write-Host "Deploying to $DestinationPath on $SiteDomainName"
           Write-Host "================================================================================"
           Copy-Item -Path $zipFilePath `
