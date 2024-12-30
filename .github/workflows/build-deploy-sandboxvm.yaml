@@ -269,7 +269,7 @@ jobs:
           Write-Host "================================================================================"
           $KeepList = "${{ env.KEEP_LIST }}"
           Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
+              param ($DestinationPath, $KeepList)
               Start-Sleep -Seconds 3
 
               # Split the KeepList string into an array of files/folders to exclude from deletion.
