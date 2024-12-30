@@ -31,6 +31,8 @@ env:
   APP_SOLUTION: ''
   APP_PROJECT: ''
   APP_ASSEMBLY: ''
+  # Keeps the files/folders in the destination path.
+  KEEP_LIST: ''
 
 jobs:
   BuildAndDeployToSandboxVM:
@@ -87,6 +89,7 @@ jobs:
                   echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
                   echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
                   echo "APP_ASSEMBLY=SurePassIdOidcServer.dll" >> "${{ github.env }}"
+                  echo "KEEP_LIST=keys,logs,spidp_log.txt" >> "${{ github.env }}"
                 }
                 "oidc-client" {
                   echo "TAG_REPOSITORY=false" >> "${{ github.env }}"
@@ -263,15 +266,24 @@ jobs:
           Write-Host "================================================================================"
           Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName on the remote machine."
           Write-Host "================================================================================"
+          $KeepList = "${{ env.KEEP_LIST }}"
           Invoke-Command -Session $session -ScriptBlock {
               param ($DestinationPath)
               Start-Sleep -Seconds 3
+
+              # Split the KeepList string into an array of files/folders to exclude from deletion.
+              if ([string]::IsNullOrEmpty($KeepList)) {
+                  $exclusions = @()
+              } else {
+                  $exclusions = $KeepList -split ','
+              }
+
               Get-ChildItem -Path $DestinationPath | ForEach-Object {
-                  if ($_.Name -ne 'keys') {
+                  if ($exclusions -notcontains $_.Name) {
                       Remove-Item -Recurse -Force -Path $_.FullName
                   }
               }
-          } -ArgumentList $DestinationPath
+          } -ArgumentList $DestinationPath, $KeepList
 
           Write-Host "================================================================================"
           Write-Host "Deploying to $DestinationPath on $SiteDomainName"
