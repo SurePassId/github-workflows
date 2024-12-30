@@ -26,6 +26,7 @@ env:
   SITE_ENV: ''
   DOT_NET_TYPE: ''
   DOTNET_VERSION: ''
+  CONFIGURATION: 'Release'
   APP_NAME: ''
   APP_SOLUTION: ''
   APP_PROJECT: ''
@@ -69,6 +70,7 @@ jobs:
               echo "APP_ASSEMBLY=\bin\SurePassPushServer.dll" >> "${{ github.env }}"
             }
             "SurePassId/IdentityProvider" {
+              echo "CONFIGURATION=Debug" >> "${{ github.env }}"
               echo "ENV_NAME=Development" >> "${{ github.env }}"
               #echo "ENV_NAME=oidc-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
@@ -128,7 +130,7 @@ jobs:
                   -target:rebuild `
                   -verbosity:minimal `
                   -property:DeployOnBuild=True `
-                  -property:Configuration=Release `
+                  -property:Configuration=${{ env.CONFIGURATION }} `
                   -property:DeployTarget=WebPublish `
                   -property:DeleteExistingFiles=False `
                   -property:PublishProvider=FileSystem `
@@ -154,7 +156,7 @@ jobs:
         if: ${{ env.DOT_NET_TYPE == 'core' }}
         run: |
           dotnet publish "${{ env.APP_PROJECT }}" `
-                 --configuration Release `
+                 --configuration ${{ env.CONFIGURATION }} `
                  --output ${{ env.PUBLISH_DIR }} `
                  -p:EnvironmentName=${{ env.ENV_NAME }}
 
