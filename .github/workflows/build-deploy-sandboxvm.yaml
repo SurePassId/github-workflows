@@ -261,11 +261,17 @@ jobs:
           } -ArgumentList $DestinationPath
 
           Write-Host "================================================================================"
-          Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName"
+          Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName on the remote machine."
           Write-Host "================================================================================"
-          if (Test-Path -Path $DestinationPath) {
-            Remove-Item -Recurse -Force -Path $DestinationPath\*
-          }
+          Invoke-Command -Session $session -ScriptBlock {
+              param ($DestinationPath)
+              Start-Sleep -Seconds 3
+              Get-ChildItem -Path $DestinationPath | ForEach-Object {
+                  if ($_.Name -ne 'keys') {
+                      Remove-Item -Recurse -Force -Path $_.FullName
+                  }
+              }
+          } -ArgumentList $DestinationPath
 
           Write-Host "================================================================================"
           Write-Host "Deploying to $DestinationPath on $SiteDomainName"
