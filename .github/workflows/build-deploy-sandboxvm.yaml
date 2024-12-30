@@ -281,10 +281,10 @@ jobs:
                   $exclusions = $KeepList -split ','
               }
 
+              write-host "Exclusions: $exclusions"
+              
               Get-ChildItem -Path $DestinationPath | ForEach-Object {
-                  Write-Host "Checking if $($_.Name) is in the KeepList"
                   if ($exclusions -notcontains $_.Name) {
-                      Write-Host "Deleting $($_.Name)"
                       Remove-Item -Recurse -Force -Path $_.FullName
                   }
               }
