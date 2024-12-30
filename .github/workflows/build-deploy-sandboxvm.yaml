@@ -228,6 +228,7 @@ jobs:
           Write-Host "================================================================================"
           $zipFilePath = "${env:TEMP}\deploy-$SiteDomainName.7z"
           #Compress-Archive -Path $SourcePath -DestinationPath $zipFilePath -Force
+          Delete-Item -Path $zipFilePath -Force -ErrorAction SilentlyContinue
           &'C:\Program Files\7-Zip\7z.exe' a -t7z $zipFilePath $SourcePath
 
           Write-Host "================================================================================"
