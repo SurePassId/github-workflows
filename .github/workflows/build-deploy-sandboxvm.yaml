@@ -37,6 +37,12 @@ jobs:
     runs-on: [self-hosted, windows-build-vm]
 
     steps:
+      - name: Clean workspace
+        run: |
+          if (Test-Path -Path "${{ github.workspace }}") {
+            Remove-Item -Recurse -Force -Path "${{ github.workspace }}\*"
+          }
+
       - name: Setup workflow variables
         run: |
           $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
