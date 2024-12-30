@@ -281,8 +281,6 @@ jobs:
                   $exclusions = $KeepList -split ','
               }
 
-              write-host "Exclusions: $exclusions"
-              
               Get-ChildItem -Path $DestinationPath | ForEach-Object {
                   if ($exclusions -notcontains $_.Name) {
                       Remove-Item -Recurse -Force -Path $_.FullName
