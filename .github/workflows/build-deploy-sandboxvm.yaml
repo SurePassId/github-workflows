@@ -39,14 +39,6 @@ jobs:
     runs-on: [self-hosted, windows-build-vm]
 
     steps:
-      - name: Check if GH_ACTIONS_PAT exists
-        id: check-secret-GH_ACTIONS_PAT
-        run: |
-          if ("${{ secrets.GH_ACTIONS_PAT }}" -eq "") {
-            echo "The secret 'GH_ACTIONS_PAT' is not set."
-            exit 1
-          }
-
       - name: Clean workspace
         run: |
           if (Test-Path -Path "${{ github.workspace }}") {
