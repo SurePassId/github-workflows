@@ -166,7 +166,7 @@ jobs:
           dotnet publish "${{ env.APP_PROJECT }}" `
                  --nologo `
                  --runtime win-x64 `
-                 --self-contained false `
+                 --self-contained true `
                  --configuration ${{ env.CONFIGURATION }} `
                  --output ${{ env.PUBLISH_DIR }} `
                  -p:EnvironmentName=${{ env.ENV_NAME }}
