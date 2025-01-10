@@ -80,12 +80,12 @@ jobs:
             "SurePassId/IdentityProvider" {
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePassIdOidcServer.sln" >> "${{ github.env }}"
               switch ("${{ inputs.DEPLOY_APP_NAME }}") {
                 "oidc" {
                   echo "CONFIGURATION=Debug" >> "${{ github.env }}"
                   echo "ENV_NAME=Development" >> "${{ github.env }}"
                   echo "APP_NAME=oidc" >> "${{ github.env }}"
-                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
                   echo "APP_PROJECT=.\IdentityProvider\IdentityProvider.csproj" >> "${{ github.env }}"
                   echo "APP_ASSEMBLY=SurePassIdOidcServer.dll" >> "${{ github.env }}"
                   echo "KEEP_LIST=keys,logs,spidp_log.txt" >> "${{ github.env }}"
@@ -94,7 +94,6 @@ jobs:
                   echo "ENV_NAME=oidc-$SiteEnv" >> "${{ github.env }}"
                   echo "TAG_REPOSITORY=false" >> "${{ github.env }}"
                   echo "APP_NAME=oidc-client" >> "${{ github.env }}"
-                  echo "APP_SOLUTION=.\IdentityProvider.sln" >> "${{ github.env }}"
                   echo "APP_PROJECT=.\IdentityProviderTestApp\IdentityProviderTestApp.csproj" >> "${{ github.env }}"
                   echo "APP_ASSEMBLY=SurePassIdOidcClient.dll" >> "${{ github.env }}"
                 }
