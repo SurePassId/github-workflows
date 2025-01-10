@@ -165,6 +165,9 @@ jobs:
         if: ${{ env.DOT_NET_TYPE == 'core' }}
         run: |
           dotnet publish "${{ env.APP_PROJECT }}" `
+                 --nologo `
+                 --runtime win-x64 `
+                 --self-contained false `
                  --configuration ${{ env.CONFIGURATION }} `
                  --output ${{ env.PUBLISH_DIR }} `
                  -p:EnvironmentName=${{ env.ENV_NAME }}
