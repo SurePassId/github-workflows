@@ -65,7 +65,7 @@ jobs:
               echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
-              echo "APP_NAME=fido2" >> "${{ github.env }}"
+              echo "APP_NAME=api" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\SurePassIdMfaServer\SurePassIdMfaServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
