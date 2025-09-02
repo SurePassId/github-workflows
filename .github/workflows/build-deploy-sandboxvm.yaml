@@ -61,13 +61,22 @@ jobs:
               echo "APP_PROJECT=.\SurePassIdLegacyMfaServer\SurePassIdLegacyMfaServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=\bin\SurePassAdmin.dll" >> "${{ github.env }}"
             }
+            "SurePassId/SurePassIdApiServer" {
+              echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "APP_NAME=api" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
+            }
             "SurePassId/SurePassIdMfaServer" {
               echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               echo "APP_NAME=api" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\SurePassIdMfaServer.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\SurePassIdMfaServer\SurePassIdMfaServer.csproj" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
             }
             "SurePassId/SurePassIdPushServer" {
