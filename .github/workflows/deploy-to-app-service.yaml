@@ -32,7 +32,7 @@ jobs:
       
     steps:
       - name: Download artifact app-${{inputs.APP}}-${{inputs.SLOT}} from the build job
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
           path: ./deplotment-package
