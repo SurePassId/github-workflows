@@ -28,7 +28,7 @@ jobs:
             "SurePassId/SurePassIdLegacyMfaServer" {
               Write-Host "Postman is not configured for: ${{ github.repository }}"
             }
-            "SurePassId/SurePassIdMfaServer" {
+            "SurePassId/SurePassIdApiServer" {
               echo "POSTMAN_COLLECTION_ID=4401059-378d5a1c-52ae-4f51-b3b1-da7d644de4d8" >> "${{ github.env }}"
 
               switch ($SiteEnv) {
@@ -75,3 +75,4 @@ jobs:
                   --environment ${{ env.POSTMAN_ENVIRONMENT_ID }} `
                   --globals workspace.postman_globals.json `
                   --verbose
+
