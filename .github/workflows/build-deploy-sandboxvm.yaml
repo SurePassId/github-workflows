@@ -124,6 +124,8 @@ jobs:
         with:
           submodules: 'recursive'
           token: ${{ secrets.GH_ACTIONS_PAT }}
+          persist-credentials: true
+          fetch-depth: 0
 
       ########################
       # .NET Framework steps #
