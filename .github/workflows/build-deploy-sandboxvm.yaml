@@ -34,9 +34,19 @@ env:
   # Keeps the files/folders in the destination path.
   KEEP_LIST: ''
 
+# Explicit so the runner never falls back to Windows PowerShell 5.1, whose `>>` writes UTF-16LE and corrupts $GITHUB_ENV.
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   BuildAndDeployToSandboxVM:
     runs-on: [self-hosted, windows-build-vm]
+    timeout-minutes: 45
+    concurrency:
+      # Evaluated in the calling repository's context, so this serializes an app against itself only.
+      group: sandboxvm-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}
+      cancel-in-progress: false
 
     steps:
       - name: Clean workspace
@@ -214,110 +224,214 @@ jobs:
       #############################
       - name: Deploy files to sandboxvm and restart ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com.
         run: |
-          $App = "${{ env.APP_NAME }}"
-          $SiteEnv = "${{ env.SITE_ENV }}"
-          $SiteDomainName = "$App-$SiteEnv.surepassid.com"
-          $SourcePath = "${{ env.PUBLISH_DIR }}\*"
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion -ge [version]'7.3') {
+              $PSNativeCommandUseErrorActionPreference = $true
+          }
+
+          $App             = "${{ env.APP_NAME }}"
+          $SiteEnv         = "${{ env.SITE_ENV }}"
+          $SiteDomainName  = "$App-$SiteEnv.surepassid.com"
+          $SourcePath      = "${{ env.PUBLISH_DIR }}\*"
           $DestinationPath = "E:\iis_sites\$SiteEnv\$SiteDomainName"
-          
+          $KeepList        = "${{ env.KEEP_LIST }}"
+          $SevenZip        = 'C:\Program Files\7-Zip\7z.exe'
+          $Appcmd          = 'C:\Windows\System32\inetsrv\appcmd.exe'
+          $RunId           = '${{ github.run_id }}-${{ github.run_attempt }}'
+          $ArchiveName     = "deploy-$SiteDomainName-$RunId.7z"
+          $LocalZipPath    = Join-Path $env:RUNNER_TEMP $ArchiveName
+
           $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
           $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
           $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
 
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-          $session = New-PSSession -ComputerName $azure_vm -Credential $credential
 
-          Write-Host "================================================================================"
-          Write-Host "Compress the source files"
-          Write-Host "================================================================================"
-          $zipFilePath = "${env:TEMP}\deploy-$SiteDomainName.7z"
-          ###Compress-Archive -Path $SourcePath -DestinationPath $zipFilePath -Force
-          if (Test-Path -Path $zipFilePath) {
-              Remove-Item -Path $zipFilePath -Force
+          function Invoke-Native {
+              param(
+                  [Parameter(Mandatory)][string]   $FilePath,
+                  [Parameter(Mandatory)][string[]] $ArgumentList,
+                  [string] $Description = $FilePath
+              )
+              & $FilePath @ArgumentList
+              if ($LASTEXITCODE -ne 0) {
+                  throw "$Description failed with exit code $LASTEXITCODE."
+              }
           }
-          &'C:\Program Files\7-Zip\7z.exe' a -t7z $zipFilePath $SourcePath
 
-          Write-Host "================================================================================"
-          Write-Host "Stopping $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd stop site $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd stop apppool $SiteDomainName
-          } -ArgumentList $SiteDomainName
+          # Declared global: so they persist for the life of the PSSession and every later Invoke-Command can call them.
+          $RemoteHelpers = {
+              $global:ErrorActionPreference = 'Stop'
 
-          Write-Host "================================================================================"
-          Write-Host "Backup $SiteDomainName folder on the remote machine to a zip file."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              Start-Sleep -Seconds 3
-              $currentDateTime = Get-Date
-              $formattedDateTime = $currentDateTime.ToString("yyyy-MM-dd_HHmmss")
-              &'C:\Program Files\7-Zip\7z.exe' a -t7z "${DestinationPath}_$formattedDateTime.7z" "${DestinationPath}" -xr!Trace
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Keep only the last 3 Backups for $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              # Get all files matching the pattern ${DestinationPath}_*.7z
-              $files = Get-ChildItem -Path "${DestinationPath}_*.7z" | Sort-Object LastWriteTime -Descending
-              # Skip the first 3 files and delete the rest.
-              $files | Select-Object -Skip 3 | ForEach-Object {
-                  Remove-Item -Path $_.FullName -Force
-              }
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          $KeepList = "${{ env.KEEP_LIST }}"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $KeepList)
-              Start-Sleep -Seconds 3
-
-              # Split the KeepList string into an array of files/folders to exclude from deletion.
-              if ([string]::IsNullOrEmpty($KeepList)) {
-                  $exclusions = @()
-              } else {
-                  $exclusions = $KeepList -split ','
-              }
-
-              Get-ChildItem -Path $DestinationPath | ForEach-Object {
-                  if ($exclusions -notcontains $_.Name) {
-                      Remove-Item -Recurse -Force -Path $_.FullName
+              function global:Invoke-Native {
+                  param(
+                      [Parameter(Mandatory)][string]   $FilePath,
+                      [Parameter(Mandatory)][string[]] $ArgumentList,
+                      [string] $Description = $FilePath
+                  )
+                  & $FilePath @ArgumentList
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "$Description failed with exit code $LASTEXITCODE."
                   }
               }
-          } -ArgumentList $DestinationPath, $KeepList
 
-          Write-Host "================================================================================"
-          Write-Host "Deploying to $DestinationPath on $SiteDomainName"
-          Write-Host "================================================================================"
-          Copy-Item -Path $zipFilePath `
-                    -Destination $DestinationPath\deploy-$SiteDomainName.7z `
-                    -ToSession $session `
-                    -Recurse `
-                    -Force
+              function global:Wait-For {
+                  param(
+                      [Parameter(Mandatory)][scriptblock] $Condition,
+                      [string] $Description = 'condition',
+                      [int]    $TimeoutSeconds = 90
+                  )
+                  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+                  while ((Get-Date) -lt $deadline) {
+                      if (& $Condition) {
+                          return
+                      }
+                      Start-Sleep -Milliseconds 500
+                  }
+                  throw "Timed out after $TimeoutSeconds seconds waiting for $Description."
+              }
+          }
 
-          Write-Host "================================================================================"
-          Write-Host "Extract the compressed file on the remote machine"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $SiteDomainName)
-              &'C:\Program Files\7-Zip\7z.exe' x "${DestinationPath}\deploy-$SiteDomainName.7z" -o"${DestinationPath}" -y
-              Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
-          } -ArgumentList $DestinationPath, $SiteDomainName
+          $session       = $null
+          $iisStopped    = $false
+          $contentIntact = $true
 
-          Write-Host "================================================================================"
-          Write-Host "Starting $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd start apppool $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd start site $SiteDomainName
-          } -ArgumentList $SiteDomainName
+          try {
+              Write-Host "================================================================================"
+              Write-Host "Compress the source files"
+              Write-Host "================================================================================"
+              if (Test-Path -Path $LocalZipPath) {
+                  Remove-Item -Path $LocalZipPath -Force
+              }
+              Invoke-Native -FilePath $SevenZip `
+                            -ArgumentList @('a', '-t7z', $LocalZipPath, $SourcePath) `
+                            -Description 'Compressing the publish output'
 
-          Remove-PSSession $session
+              $session = New-PSSession -ComputerName $azure_vm -Credential $credential
+              Invoke-Command -Session $session -ScriptBlock $RemoteHelpers
+
+              Write-Host "================================================================================"
+              Write-Host "Stopping $SiteDomainName"
+              Write-Host "================================================================================"
+              # Set before the stop, so the finally block restarts whatever a partial stop managed to take down.
+              $iisStopped = $true
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($SiteDomainName, $Appcmd)
+                  # Exit codes ignored on purpose: stopping an already-stopped site is not an error. Wait-For is the real assertion.
+                  & $Appcmd stop site    $SiteDomainName 2>$null | Out-Null
+                  & $Appcmd stop apppool $SiteDomainName 2>$null | Out-Null
+
+                  Wait-For -Description "site $SiteDomainName to report Stopped" -TimeoutSeconds 90 -Condition {
+                      (& $Appcmd list site "$SiteDomainName" /text:state 2>$null) -eq 'Stopped'
+                  }
+                  Wait-For -Description "app pool $SiteDomainName to report Stopped" -TimeoutSeconds 90 -Condition {
+                      (& $Appcmd list apppool "$SiteDomainName" /text:state 2>$null) -eq 'Stopped'
+                  }
+                  Wait-For -Description 'worker processes to exit' -TimeoutSeconds 180 -Condition {
+                      -not (& $Appcmd list wp /apppool.name:"$SiteDomainName" /text:name 2>$null)
+                  }
+              } -ArgumentList $SiteDomainName, $Appcmd
+
+              Write-Host "================================================================================"
+              Write-Host "Backup $SiteDomainName folder on the remote machine to a zip file."
+              Write-Host "================================================================================"
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($DestinationPath, $SevenZip)
+                  $formattedDateTime = (Get-Date).ToString("yyyy-MM-dd_HHmmss")
+                  Invoke-Native -FilePath $SevenZip `
+                                -ArgumentList @('a', '-t7z', "${DestinationPath}_$formattedDateTime.7z", $DestinationPath, '-xr!Trace') `
+                                -Description 'Backing up the live directory'
+              } -ArgumentList $DestinationPath, $SevenZip
+
+              Write-Host "================================================================================"
+              Write-Host "Keep only the last 3 Backups for $SiteDomainName on the remote machine."
+              Write-Host "================================================================================"
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($DestinationPath)
+                  Get-ChildItem -Path "${DestinationPath}_*.7z" |
+                      Sort-Object LastWriteTime -Descending |
+                      Select-Object -Skip 3 |
+                      ForEach-Object { Remove-Item -Path $_.FullName -Force }
+              } -ArgumentList $DestinationPath
+
+              Write-Host "================================================================================"
+              Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
+              Write-Host "================================================================================"
+              $contentIntact = $false
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($DestinationPath, $KeepList)
+                  # Split the KeepList string into an array of files/folders to exclude from deletion.
+                  if ([string]::IsNullOrEmpty($KeepList)) {
+                      $exclusions = @()
+                  } else {
+                      $exclusions = $KeepList -split ','
+                  }
+
+                  Get-ChildItem -Path $DestinationPath | ForEach-Object {
+                      if ($exclusions -notcontains $_.Name) {
+                          Remove-Item -Recurse -Force -Path $_.FullName
+                      }
+                  }
+              } -ArgumentList $DestinationPath, $KeepList
+
+              Write-Host "================================================================================"
+              Write-Host "Deploying to $DestinationPath on $SiteDomainName"
+              Write-Host "================================================================================"
+              Copy-Item -Path $LocalZipPath `
+                        -Destination (Join-Path $DestinationPath $ArchiveName) `
+                        -ToSession $session `
+                        -Force
+
+              Write-Host "================================================================================"
+              Write-Host "Extract the compressed file on the remote machine"
+              Write-Host "================================================================================"
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($DestinationPath, $ArchiveName, $SevenZip)
+                  $remoteZipPath = Join-Path $DestinationPath $ArchiveName
+                  Invoke-Native -FilePath $SevenZip `
+                                -ArgumentList @('x', $remoteZipPath, "-o$DestinationPath", '-y') `
+                                -Description 'Extracting the release archive'
+                  Remove-Item -Path $remoteZipPath -Force
+              } -ArgumentList $DestinationPath, $ArchiveName, $SevenZip
+              $contentIntact = $true
+
+              Write-Host "================================================================================"
+              Write-Host "Starting $SiteDomainName"
+              Write-Host "================================================================================"
+              Invoke-Command -Session $session -ScriptBlock {
+                  param ($SiteDomainName, $Appcmd)
+                  Invoke-Native -FilePath $Appcmd `
+                                -ArgumentList @('start', 'apppool', $SiteDomainName) `
+                                -Description "Starting app pool $SiteDomainName"
+                  Invoke-Native -FilePath $Appcmd `
+                                -ArgumentList @('start', 'site', $SiteDomainName) `
+                                -Description "Starting site $SiteDomainName"
+                  Wait-For -Description "site $SiteDomainName to report Started" -TimeoutSeconds 90 -Condition {
+                      (& $Appcmd list site "$SiteDomainName" /text:state 2>$null) -eq 'Started'
+                  }
+              } -ArgumentList $SiteDomainName, $Appcmd
+              $iisStopped = $false
+          }
+          finally {
+              if ($session) {
+                  if ($iisStopped) {
+                      if ($contentIntact) {
+                          Write-Host "Deployment failed before $DestinationPath was modified. Restarting $SiteDomainName."
+                          Invoke-Command -Session $session -ScriptBlock {
+                              param ($SiteDomainName, $Appcmd)
+                              & $Appcmd start apppool $SiteDomainName 2>$null | Out-Null
+                              & $Appcmd start site    $SiteDomainName 2>$null | Out-Null
+                          } -ArgumentList $SiteDomainName, $Appcmd
+                      }
+                      else {
+                          # Starting here would serve a half-written release and let w3wp hold handles that block the next run.
+                          Write-Host "::error::Deployment failed with $DestinationPath partially written. $SiteDomainName is deliberately left STOPPED. Restore from the newest ${DestinationPath}_*.7z backup on the sandbox VM, then start the app pool and site."
+                      }
+                  }
+                  Remove-PSSession $session
+              }
+              if (Test-Path -Path $LocalZipPath) {
+                  Remove-Item -Path $LocalZipPath -Force
+              }
+          }

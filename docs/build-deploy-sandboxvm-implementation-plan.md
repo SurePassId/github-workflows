@@ -26,7 +26,7 @@ Status markers appear on every phase heading and on every task heading inside a 
 | Phase                                       | Status | Notes                                                           |
 | ------------------------------------------- | ------ | --------------------------------------------------------------- |
 | 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below. |
-| 1 — Safety rails                            | ⬜     |                                                                 |
+| 1 — Safety rails                            | 🔄     | Code complete on `feat/phase-1-safety-rails`; awaiting verification. |
 | 2 — Tag after deployment                    | ⬜     |                                                                 |
 | 3 — Secrets, permissions, SHA pins          | ⬜     | Unblocked by phase 0.                                           |
 | 4 — Framework-dependent publish             | ⬜     |                                                                 |
@@ -47,10 +47,10 @@ These were discovered while writing the plan and are not in the review. Each is 
 | I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | 🔄 node24 bump merged; SHA pin in phase 3 |
 | I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | ⬜                                        |
 | I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | ⬜                                        |
-| I4  | The shell is implicit. Under Windows PowerShell 5.1, `>>` writes UTF-16LE, which corrupts `$GITHUB_ENV` parsing                        | Declare `defaults.run.shell: pwsh`                                  | 1     | ⬜                                        |
+| I4  | The shell is implicit. Under Windows PowerShell 5.1, `>>` writes UTF-16LE, which corrupts `$GITHUB_ENV` parsing                        | Declare `defaults.run.shell: pwsh`                                  | 1     | 🔄 Implemented; awaiting verification     |
 | I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | ⬜                                        |
-| I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | ⬜                                        |
-| I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | ⬜                                        |
+| I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | 🔄 Implemented; awaiting verification     |
+| I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | 🔄 Implemented; awaiting verification     |
 | I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | ⬜                                        |
 | I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | ⬜                                        |
 
@@ -85,11 +85,13 @@ Commit SHAs resolved from the GitHub API on 2026-08-11.
 
 ---
 
-## ⬜ Phase 1 — Safety rails (F1, F2, F7, F12, I4, I6, I7)
+## 🔄 Phase 1 — Safety rails (F1, F2, F7, F12, I4, I6, I7)
 
 **Goal:** make failures fail loudly, stop concurrent runs from colliding, and guarantee the IIS site is restarted and the session closed no matter what.
 
-### ⬜ 1.1 Workflow-level shell (I4)
+Implemented on `feat/phase-1-safety-rails`. `pwsh` 7.6.4 is confirmed present on the build VM, so `defaults.run.shell: pwsh` and `$PSNativeCommandUseErrorActionPreference` are both safe. Remote `Invoke-Command` sessions still run Windows PowerShell 5.1 over WinRM, so the remote side relies on `$global:ErrorActionPreference` plus `Invoke-Native` for exit-code checking.
+
+### 🔄 1.1 Workflow-level shell (I4)
 
 ```yaml
 defaults:
@@ -97,7 +99,7 @@ defaults:
     shell: pwsh
 ```
 
-### ⬜ 1.2 Job-level concurrency and timeout (F2, F12, I7)
+### 🔄 1.2 Job-level concurrency and timeout (F2, F12, I7)
 
 ```yaml
 jobs:
@@ -113,7 +115,7 @@ jobs:
 
 > This group is evaluated in the **calling** repository's context, so it serializes an application against itself but cannot serialize the four repositories that share the VM (Q2). That protection comes from the registered runner count — which is **one** (phase 0), so cross-repository runs already serialize by queueing for the single runner. Registering a second runner on that VM would remove that accidental protection.
 
-### ⬜ 1.3 Session-scoped helpers
+### 🔄 1.3 Session-scoped helpers
 
 Functions declared `global:` inside an `Invoke-Command` persist for the life of the `PSSession`, so they are defined once and reused by every later remote call.
 
@@ -156,41 +158,56 @@ $RemoteHelpers = {
 }
 ```
 
-### ⬜ 1.4 Wrap the deployment (F1)
+### 🔄 1.4 Wrap the deployment (F1)
 
 ```powershell
-$session   = $null
-$appcmd    = 'C:\Windows\System32\inetsrv\appcmd.exe'
-$runId     = '${{ github.run_id }}-${{ github.run_attempt }}'
-$zipPath   = Join-Path $env:RUNNER_TEMP "deploy-$SiteDomainName-$runId.7z"   # I6
-$iisStopped = $false
+$session       = $null
+$iisStopped    = $false
+$contentIntact = $true
+$RunId         = '${{ github.run_id }}-${{ github.run_attempt }}'
+$ArchiveName   = "deploy-$SiteDomainName-$RunId.7z"                 # I6
+$LocalZipPath  = Join-Path $env:RUNNER_TEMP $ArchiveName
 
 try {
     $session = New-PSSession -ComputerName $azureVm -Credential $credential
     Invoke-Command -Session $session -ScriptBlock $RemoteHelpers
 
-    # ... compress, stage, swap ...
+    $iisStopped = $true          # set *before* the stop; see below
+    # ... stop, back up, delete, copy, extract ...
+    $contentIntact = $false      # set immediately before the destructive delete
+    # ...
+    $contentIntact = $true       # set once extraction succeeds
+    # ... start, then:
+    $iisStopped = $false
 }
 finally {
     if ($session) {
         if ($iisStopped) {
-            Invoke-Command -Session $session -ScriptBlock {
-                param($SiteDomainName, $Appcmd)
-                & $Appcmd start apppool $SiteDomainName
-                & $Appcmd start site    $SiteDomainName
-            } -ArgumentList $SiteDomainName, $appcmd
+            if ($contentIntact) {
+                Invoke-Command -Session $session -ScriptBlock {
+                    param($SiteDomainName, $Appcmd)
+                    & $Appcmd start apppool $SiteDomainName 2>$null | Out-Null
+                    & $Appcmd start site    $SiteDomainName 2>$null | Out-Null
+                } -ArgumentList $SiteDomainName, $Appcmd
+            }
+            else {
+                Write-Host "::error::… deliberately left STOPPED … restore from ${DestinationPath}_*.7z"
+            }
         }
         Remove-PSSession $session
     }
-    if (Test-Path -Path $zipPath) {
-        Remove-Item -Path $zipPath -Force
+    if (Test-Path -Path $LocalZipPath) {
+        Remove-Item -Path $LocalZipPath -Force
     }
 }
 ```
 
-`$iisStopped` is set immediately after the stop succeeds, so `finally` only tries to restart what it actually stopped.
+Two deviations from the original sketch, both deliberate:
 
-### ⬜ 1.5 Replace the fixed sleeps (F7)
+- **`$iisStopped` is set _before_ the stop, not after.** A partial stop — site stopped, app pool stop throws — would otherwise leave the flag `$false` and the site down. Restarting something already running is harmless because the `finally` restart ignores exit codes.
+- **The restart is conditional on `$contentIntact`.** If the failure lands between the destructive delete and a successful extract, the site is left **stopped** on purpose. Starting it there would serve 500s from a gutted directory — equally broken, but less obvious — and `w3wp` would re-acquire handles on that directory, which can make the _next_ deployment's delete step fail. The error annotation names the backup archive to restore from. This whole branch disappears once phase 6 replaces the in-place overwrite with a staged directory and a rename swap.
+
+### 🔄 1.5 Replace the fixed sleeps (F7)
 
 Delete both `Start-Sleep -Seconds 3` calls and poll for real state instead:
 
@@ -203,7 +220,9 @@ Wait-For -Description 'worker processes to exit' -Condition {
 }
 ```
 
-> These two calls deliberately bypass `Invoke-Native`: "no matching object" is the success condition, not an error.
+> These calls deliberately bypass `Invoke-Native`: "no matching object" is the success condition, not an error.
+
+The `appcmd stop` commands themselves also ignore their exit codes, because stopping an already-stopped site is an error to `appcmd` but not to us — and phase 1.4 can now deliberately leave a site stopped for the next run to find. The `Wait-For` calls are the real assertion. The start path is the mirror image: `Invoke-Native` on both `start` commands, then `Wait-For` the site to report `Started`.
 
 **Verify:** force a failure (point `APP_PROJECT` at a bad path on a scratch branch) and confirm the run fails, the site is running, and no session or temp archive is left behind.
 
