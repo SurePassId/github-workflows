@@ -546,6 +546,7 @@ Branches are dropped entirely (Q3). All four repositories become:
 
 ```yaml
 on:
+  workflow_dispatch:
   push:
     tags: ["deploy-to-*"]
 
@@ -564,7 +565,14 @@ jobs:
 
 The glob is the point: `deploy-to-*` matches whatever environments exist, so adding or renaming one is a change to the allow-list in 7.1 and nowhere else. An unknown environment — `deploy-to-prod` — still triggers a run, but it fails in the shared workflow's validation with a message naming the value, which is the correct place for that decision to be made once.
 
-> **`workflow_dispatch` is deliberately dropped.** A dispatch runs from a branch ref, which carries no environment, so keeping it means every caller declares an input — and if it is a `choice`, the environment list is back in four files. If manual runs are wanted later, add a plain `type: string` input and let 7.1 validate it, rather than a `choice`. Re-pointing the tag is the manual path in the meantime.
+**`workflow_dispatch` keeps no inputs, and does not need any.** The **Run workflow** ref selector lists tags as well as branches, so choosing `deploy-to-alpha` there produces `refs/tags/deploy-to-alpha` — the same ref a push produces, resolved by the same code in 7.1. That is the manual re-deploy path: it replays the tag's current commit without moving anything.
+
+Two consequences of that:
+
+- The workflow file must exist on the **default branch** for the option to appear in the UI at all; the version that runs is the one on the selected ref.
+- Dispatching from `main`, or any ordinary branch, fails in 7.1 with "cannot derive a deployment environment". That is the intended behavior — it fails closed rather than guessing — but it is worth saying out loud, because the old workflow accepted a dispatch from `DEPLOY/alpha`.
+
+If an explicit override is ever wanted, add a `type: string` input passed to `DEPLOYMENT_ENVIRONMENT` and let 7.1 validate it. Avoid `type: choice`: the option list is not shareable, so it would put the environment names back into four files, which is the thing 7.1 exists to prevent.
 
 Once all four have moved, delete the `refs/heads/DEPLOY/` branch of the regex in 7.1.
 
