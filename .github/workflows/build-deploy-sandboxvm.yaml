@@ -1,15 +1,14 @@
-
 name: Build and deploy to SANDBOXVM
 
 on:
   workflow_call:
     inputs:
       DEPLOY_APP_NAME:
-        description: 'The app name to deploy.'
+        description: "The app name to deploy."
         type: string
         required: false
-        default: ''
-    secrets: 
+        default: ""
+    secrets:
       GH_ACTIONS_PAT:
         required: true
       SANDBOX_VM_USERNAME:
@@ -22,17 +21,17 @@ on:
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
   TAG_REPOSITORY: true
-  ENV_NAME: ''
-  SITE_ENV: ''
-  DOT_NET_TYPE: ''
-  DOTNET_VERSION: ''
-  CONFIGURATION: 'Release'
-  APP_NAME: ''
-  APP_SOLUTION: ''
-  APP_PROJECT: ''
-  APP_ASSEMBLY: ''
+  ENV_NAME: ""
+  SITE_ENV: ""
+  DOT_NET_TYPE: ""
+  DOTNET_VERSION: ""
+  CONFIGURATION: "Release"
+  APP_NAME: ""
+  APP_SOLUTION: ""
+  APP_PROJECT: ""
+  APP_ASSEMBLY: ""
   # Keeps the files/folders in the destination path.
-  KEEP_LIST: ''
+  KEEP_LIST: ""
 
 # Explicit so the runner never falls back to Windows PowerShell 5.1, whose `>>` writes UTF-16LE and corrupts $GITHUB_ENV.
 defaults:
@@ -123,7 +122,7 @@ jobs:
       - name: Checkout ${{ github.repository }} and submodules
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: "recursive"
           token: ${{ secrets.GH_ACTIONS_PAT }}
           persist-credentials: false
           fetch-depth: 0

@@ -23,18 +23,18 @@ Status markers appear on every phase heading and on every task heading inside a 
 | ⬜     | Not started                                              |
 | ➖     | Reference or decision note — nothing to implement        |
 
-| Phase                                       | Status | Notes                                                           |
-| ------------------------------------------- | ------ | --------------------------------------------------------------- |
-| 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below. |
-| 1 — Safety rails                            | 🔄     | Code complete on `feat/phase-1-safety-rails`; awaiting verification. |
-| 2 — Tag after deployment                    | ⬜     |                                                                 |
-| 3 — Secrets, permissions, SHA pins          | ⬜     | Unblocked by phase 0.                                           |
-| 4 — Framework-dependent publish             | ⬜     |                                                                 |
-| 5 — GitHub App installation token           | ⬜     | Unblocked by phase 0.                                           |
-| 6 — Staged, atomic deployment with rollback | ⬜     |                                                                 |
-| 7 — Explicit environment input              | ⬜     |                                                                 |
-| 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.        |
-| 9 — Tooling                                 | ⬜     |                                                                 |
+| Phase                                       | Status | Notes                                                                |
+| ------------------------------------------- | ------ | -------------------------------------------------------------------- |
+| 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below.      |
+| 1 — Safety rails                            | 🔄     | Code complete; awaiting verification.                                |
+| 2 — Tag after deployment                    | ⬜     |                                                                      |
+| 3 — Secrets, permissions, SHA pins          | ⬜     | Unblocked by phase 0.                                                |
+| 4 — Framework-dependent publish             | ⬜     |                                                                      |
+| 5 — GitHub App installation token           | ⬜     | Unblocked by phase 0.                                                |
+| 6 — Staged, atomic deployment with rollback | ⬜     |                                                                      |
+| 7 — Explicit environment input              | ⬜     |                                                                      |
+| 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.             |
+| 9 — Tooling                                 | ⬜     |                                                                      |
 
 ---
 
@@ -89,7 +89,7 @@ Commit SHAs resolved from the GitHub API on 2026-08-11.
 
 **Goal:** make failures fail loudly, stop concurrent runs from colliding, and guarantee the IIS site is restarted and the session closed no matter what.
 
-Implemented on `feat/phase-1-safety-rails`. `pwsh` 7.6.4 is confirmed present on the build VM, so `defaults.run.shell: pwsh` and `$PSNativeCommandUseErrorActionPreference` are both safe. Remote `Invoke-Command` sessions still run Windows PowerShell 5.1 over WinRM, so the remote side relies on `$global:ErrorActionPreference` plus `Invoke-Native` for exit-code checking.
+Implemented on `feat/sandboxvm-hardening`, the single branch carrying every phase. `pwsh` 7.6.4 is confirmed present on the build VM, so `defaults.run.shell: pwsh` and `$PSNativeCommandUseErrorActionPreference` are both safe. Remote `Invoke-Command` sessions still run Windows PowerShell 5.1 over WinRM, so the remote side relies on `$global:ErrorActionPreference` plus `Invoke-Native` for exit-code checking.
 
 ### 🔄 1.1 Workflow-level shell (I4)
 
