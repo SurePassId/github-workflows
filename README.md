@@ -10,11 +10,11 @@ This repository contains workflow templates that are called from other SurePassI
 
 ### Build Workflows
 
-| Workflow                 | Purpose                   | .NET Version  | Runner         |
-| ------------------------ | ------------------------- | ------------- | -------------- |
-| `build-dot-net-fwk.yaml` | .NET Framework 4.8 builds | Framework 4.8 | windows-2019   |
-| `build-dot-net6.yaml`    | .NET 6 applications       | 6.0.x         | windows-latest |
-| `build-dot-net8.yaml`    | .NET 8 applications       | 8.0.x         | windows-latest |
+| Workflow                 | Purpose                   | .NET Version  | Runner                            |
+| ------------------------ | ------------------------- | ------------- | --------------------------------- |
+| `build-dot-net-fwk.yaml` | .NET Framework 4.8 builds | Framework 4.8 | `[self-hosted, windows-build-vm]` |
+| `build-dot-net6.yaml`    | .NET 6 applications       | 6.0.x         | windows-latest                    |
+| `build-dot-net8.yaml`    | .NET 8 applications       | 8.0.x         | windows-latest                    |
 
 ### Deployment Workflows
 
@@ -34,7 +34,7 @@ This repository contains workflow templates that are called from other SurePassI
 The workflows automatically detect the calling repository and configure build parameters accordingly:
 
 - **SurePassId/SurePassIdLegacyMfaServer** - Legacy .NET Framework MFA Server
-- **SurePassId/SurePassIdMfaServer** - .NET 8 MFA API Server
+- **SurePassId/SurePassIdApiServer** - .NET 8 MFA API Server
 - **SurePassId/SurePassIdPushServer** - .NET Framework Push Server
 - **SurePassId/IdentityProvider** - .NET 8 OIDC Server (multi-app support)
 
@@ -70,7 +70,7 @@ jobs:
       SLOT: "sandbox"
       DEPLOY_ENV: "sandbox"
       BUILD_CONFIG: "Release"
-      BUILD_PROJECT: "./SurePassIdMfaServer/SurePassIdMfaServer.csproj"
+      BUILD_PROJECT: "./SurePassIdApiServer/SurePassIdApiServer.csproj"
     secrets:
       SSH_KEY: ${{ secrets.SSH_KEY }}
 
@@ -110,10 +110,16 @@ jobs:
 
 Configure these organization/repository secrets for workflows to function:
 
-### Universal Secrets
+### Source Checkout
 
-- `GH_ACTIONS_PAT` - GitHub Actions token for private repo access
-- `SSH_KEY` - SSH key for submodule checkout
+Two credentials are in use and they are **not** interchangeable — pass the one the workflow you are calling declares:
+
+| Secret           | Passed to `actions/checkout` as | Used by                                                                |
+| ---------------- | ------------------------------- | ---------------------------------------------------------------------- |
+| `SSH_KEY`        | `ssh-key`                       | `build-dot-net-fwk.yaml`, `build-dot-net6.yaml`, `build-dot-net8.yaml` |
+| `GH_ACTIONS_PAT` | `token`                         | `build-deploy-sandboxvm.yaml`, `run-postman-tests.yaml`                |
+
+`GH_ACTIONS_PAT` is a fine-grained PAT scoped to the submodule repositories. It is slated for replacement by a GitHub App installation token — see [docs/build-deploy-sandboxvm-implementation-plan.md](docs/build-deploy-sandboxvm-implementation-plan.md).
 
 ### Azure App Service
 

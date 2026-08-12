@@ -1,0 +1,12 @@
+{
+  "folders": [
+    {
+      "path": ".",
+    },
+    {
+      "name": "copy-web-env-files",
+      "path": "../copy-web-env-files",
+    },
+  ],
+  "settings": {},
+}
