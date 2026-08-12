@@ -27,10 +27,10 @@ Status markers appear on every phase heading and on every task heading inside a 
 | ------------------------------------------- | ------ | -------------------------------------------------------------------- |
 | 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below.      |
 | 1 — Safety rails                            | 🔄     | Code complete; awaiting verification.                                |
-| 2 — Tag after deployment                    | ⬜     |                                                                      |
-| 3 — Secrets, permissions, SHA pins          | ⬜     | Unblocked by phase 0.                                                |
-| 4 — Framework-dependent publish             | ⬜     |                                                                      |
-| 5 — GitHub App installation token           | ⬜     | Unblocked by phase 0.                                                |
+| 2 — Tag after deployment                    | 🔄     | Code complete; awaiting verification.                                |
+| 3 — Secrets, permissions, SHA pins          | 🔄     | Code complete; awaiting verification.                                |
+| 4 — Framework-dependent publish             | 🔄     | Code complete; awaiting verification.                                |
+| 5 — GitHub App installation token           | 🔄     | 5.1 done. 5.2 waits on the callers passing the App secrets.          |
 | 6 — Staged, atomic deployment with rollback | ⬜     |                                                                      |
 | 7 — Explicit environment input              | ⬜     |                                                                      |
 | 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.             |
@@ -44,15 +44,15 @@ These were discovered while writing the plan and are not in the review. Each is 
 
 | #   | Issue                                                                                                                                  | Resolution                                                          | Phase | Status                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | ----------------------------------------- |
-| I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | 🔄 node24 bump merged; SHA pin in phase 3 |
-| I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | ⬜                                        |
-| I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | ⬜                                        |
+| I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | 🔄 Bumped and pinned; awaiting verification |
+| I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | 🔄 Implemented; awaiting verification     |
+| I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | 🔄 Implemented; awaiting verification     |
 | I4  | The shell is implicit. Under Windows PowerShell 5.1, `>>` writes UTF-16LE, which corrupts `$GITHUB_ENV` parsing                        | Declare `defaults.run.shell: pwsh`                                  | 1     | 🔄 Implemented; awaiting verification     |
-| I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | ⬜                                        |
+| I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | 🔄 Implemented; awaiting verification     |
 | I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | 🔄 Implemented; awaiting verification     |
 | I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | 🔄 Implemented; awaiting verification     |
 | I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | ⬜                                        |
-| I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | ⬜                                        |
+| I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | 🔄 Implemented; awaiting verification     |
 
 **Verified as non-issues:** `actions/github-script` v9 is a breaking major (ESM; `require('@actions/github')` removed; `getOctokit` is now an injected parameter), but the tagging script here uses only `github.rest.*` and `process.env`, so it is unaffected. `echo "X=..." >> "${{ github.env }}"` is valid — `github.env` expands to the env-file path — and is safe once I4 is fixed.
 
@@ -228,7 +228,7 @@ The `appcmd stop` commands themselves also ignore their exit codes, because stop
 
 ---
 
-## ⬜ Phase 2 — Tag after deployment, idempotently (F3, I2)
+## 🔄 Phase 2 — Tag after deployment, idempotently (F3, I2)
 
 **Goal:** a release tag means the deployment succeeded.
 
@@ -275,9 +275,9 @@ The `await` is the substantive fix (I2): without it, a rejected promise never fa
 
 ---
 
-## ⬜ Phase 3 — Secrets, permissions, and SHA pins (F4, F5, I9)
+## 🔄 Phase 3 — Secrets, permissions, and SHA pins (F4, F5, I9)
 
-### ⬜ 3.1 Explicit permissions
+### 🔄 3.1 Explicit permissions
 
 ```yaml
 jobs:
@@ -286,7 +286,7 @@ jobs:
       contents: write # release tag only; narrows to the tag job in phase 8
 ```
 
-### ⬜ 3.2 Secrets via the environment, not string interpolation (F4)
+### 🔄 3.2 Secrets via the environment, not string interpolation (F4)
 
 ```yaml
 - name: Deploy files to sandboxvm
@@ -302,7 +302,7 @@ jobs:
     )
 ```
 
-### ⬜ 3.3 Pin every action
+### 🔄 3.3 Pin every action
 
 Apply the reference table above. Annotate each with its version:
 
@@ -316,9 +316,9 @@ For `copy-web-env-files`, pin the commit produced by the node24 bump in phase 0.
 
 ---
 
-## ⬜ Phase 4 — Framework-dependent publish and shallow fetch (F11, F13, Q6, Q7, I3, I5)
+## 🔄 Phase 4 — Framework-dependent publish and shallow fetch (F11, F13, Q6, Q7, I3, I5)
 
-### ⬜ 4.1 RID-scoped restore, then `--no-restore` publish (I3)
+### 🔄 4.1 RID-scoped restore, then `--no-restore` publish (I3)
 
 Both flags change together or the build breaks.
 
@@ -345,11 +345,11 @@ Both flags change together or the build breaks.
 
 `--runtime win-x64` stays so the output keeps its `apphost` and the generated `web.config` still points at `.\App.exe` (Q6).
 
-### ⬜ 4.2 Drop the full-history fetch (Q7)
+### 🔄 4.2 Drop the full-history fetch (Q7)
 
 Delete `fetch-depth: 0` from the checkout step. The default of `1` applies; no repository derives its version from history.
 
-### ⬜ 4.3 Read the version without loading the assembly (F13, I5)
+### 🔄 4.3 Read the version without loading the assembly (F13, I5)
 
 Framework-dependent output no longer carries the runtime DLLs, which makes `LoadFile` a worse bet than it already was.
 
@@ -368,11 +368,11 @@ echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
 
 ---
 
-## ⬜ Phase 5 — GitHub App installation token (F5a, Q12)
+## 🔄 Phase 5 — GitHub App installation token (F5a, Q12)
 
 The App, its installation, and both organization secrets exist as of phase 0 — only the workflow changes below remain.
 
-### ⬜ 5.1 Transitional release
+### 🔄 5.1 Transitional release
 
 Accept both credentials so callers can be migrated without a flag day.
 
@@ -389,9 +389,15 @@ on:
 ```
 
 ```yaml
+jobs:
+  BuildAndDeployToSandboxVM:
+    env:
+      # The `secrets` context is not available in a step-level `if`, so presence has to be surfaced through `env`.
+      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
+
 - name: Mint submodule token
   id: submodule_token
-  if: ${{ secrets.SUBMODULE_APP_ID != '' }}
+  if: ${{ env.SUBMODULE_APP_ID != '' }}
   uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
   with:
     app-id: ${{ secrets.SUBMODULE_APP_ID }}
@@ -405,6 +411,8 @@ on:
     token: ${{ steps.submodule_token.outputs.token || secrets.GH_ACTIONS_PAT }}
     persist-credentials: false
 ```
+
+`app-id` carries a deprecation warning in v3 — the action prefers `client-id`. Swapping the organization secret's value from the App ID to the App's client ID and renaming the input clears it; the two are interchangeable otherwise.
 
 If callers use `secrets: inherit`, organization secrets reach the workflow with no caller change. If any caller maps secrets explicitly, add the two there.
 

@@ -9,8 +9,13 @@ on:
         required: false
         default: ""
     secrets:
+      # Transitional: callers pass either the App credentials or the PAT. The PAT goes away once all four have migrated.
       GH_ACTIONS_PAT:
-        required: true
+        required: false
+      SUBMODULE_APP_ID:
+        required: false
+      SUBMODULE_APP_PRIVATE_KEY:
+        required: false
       SANDBOX_VM_USERNAME:
         required: true
       SANDBOX_VM_PASSWORD:
@@ -42,6 +47,11 @@ jobs:
   BuildAndDeployToSandboxVM:
     runs-on: [self-hosted, windows-build-vm]
     timeout-minutes: 45
+    permissions:
+      contents: write # release tag only
+    env:
+      # The `secrets` context is unavailable in a step-level `if`, so presence is surfaced through `env`.
+      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
     concurrency:
       # Evaluated in the calling repository's context, so this serializes an app against itself only.
       group: sandboxvm-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}
@@ -119,20 +129,29 @@ jobs:
       ##################
       # Checkout code. #
       ##################
+      - name: Mint submodule token
+        id: submodule_token
+        if: ${{ env.SUBMODULE_APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # `app-id` is deprecated in favour of `client-id`; switch once the org secret holds the App's client ID.
+          app-id: ${{ secrets.SUBMODULE_APP_ID }}
+          private-key: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Checkout ${{ github.repository }} and submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: "recursive"
-          token: ${{ secrets.GH_ACTIONS_PAT }}
+          token: ${{ steps.submodule_token.outputs.token || secrets.GH_ACTIONS_PAT }}
           persist-credentials: false
-          fetch-depth: 0
 
       ########################
       # .NET Framework steps #
       ########################
       - name: Setup MSBuild path
         if: ${{ env.DOT_NET_TYPE == 'framework' }}
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
 
       - name: Restore the solution's NuGet packages.
         if: ${{ env.DOT_NET_TYPE == 'framework' }}
@@ -161,7 +180,7 @@ jobs:
       ###################
       - name: Setup .NET ${{ env.DOTNET_VERSION }}
         if: ${{ env.DOT_NET_TYPE == 'core' }}
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -169,6 +188,7 @@ jobs:
         if: ${{ env.DOT_NET_TYPE == 'core' }}
         run: |
           dotnet restore "${{ env.APP_SOLUTION }}" `
+                 --runtime win-x64 `
                  --source https://api.nuget.org/v3/index.json
 
       - name: Build ${{ env.APP_PROJECT }}
@@ -177,7 +197,8 @@ jobs:
           dotnet publish "${{ env.APP_PROJECT }}" `
                  --nologo `
                  --runtime win-x64 `
-                 --self-contained true `
+                 --self-contained false `
+                 --no-restore `
                  --configuration ${{ env.CONFIGURATION }} `
                  --output ${{ env.PUBLISH_DIR }} `
                  -p:EnvironmentName=${{ env.ENV_NAME }}
@@ -187,7 +208,7 @@ jobs:
       ####################################
       - name: Copy environment specific files in place.
         if: ${{ env.DOT_NET_TYPE == 'framework' }}
-        uses: SurePassId/copy-web-env-files@main
+        uses: SurePassId/copy-web-env-files@042023699388269110326b9f1df4abba8cbd2923 # node24 runtime bump
         with:
           deployment-environment: ${{ env.SITE_ENV }}
           path: "${{ env.PUBLISH_DIR }}"
@@ -198,30 +219,21 @@ jobs:
       - name: Generate Release Tag Name
         if: ${{ env.TAG_REPOSITORY == 'true' }}
         run: |
-          $assembly = [System.Reflection.Assembly]::LoadFile("${{ env.PUBLISH_DIR }}\${{ env.APP_ASSEMBLY }}")
-          $version = $assembly.GetName().Version
+          $assemblyPath = Join-Path '${{ env.PUBLISH_DIR }}' '${{ env.APP_ASSEMBLY }}'
+          if (-not (Test-Path -Path $assemblyPath)) {
+              throw "Expected assembly not found at $assemblyPath. The publish step produced nothing usable."
+          }
+          $version = [System.Reflection.AssemblyName]::GetAssemblyName($assemblyPath).Version
           echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
-
-      #######################################
-      # Tag the commit with the release tag #
-      #######################################
-      - name: Tag the commit with the release tag
-        uses: actions/github-script@v7
-        if: ${{ env.TAG_REPOSITORY == 'true' }}
-        with:
-          script: |
-            const {APP_TAG_NAME} = process.env          
-            github.rest.git.createRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `refs/tags/${APP_TAG_NAME}`,
-                sha: context.sha
-            })
 
       #############################
       # Deploy files to sandboxvm #
       #############################
       - name: Deploy files to sandboxvm and restart ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com.
+        env:
+          SANDBOX_VM_USERNAME: ${{ secrets.SANDBOX_VM_USERNAME }}
+          SANDBOX_VM_PASSWORD: ${{ secrets.SANDBOX_VM_PASSWORD }}
+          SANDBOX_VM_HOSTNAME: ${{ secrets.SANDBOX_VM_HOSTNAME }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($PSVersionTable.PSVersion -ge [version]'7.3') {
@@ -240,12 +252,11 @@ jobs:
           $ArchiveName     = "deploy-$SiteDomainName-$RunId.7z"
           $LocalZipPath    = Join-Path $env:RUNNER_TEMP $ArchiveName
 
-          $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
-          $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
-          $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
-
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+          $AzureVm    = $env:SANDBOX_VM_HOSTNAME
+          $Credential = [pscredential]::new(
+              $env:SANDBOX_VM_USERNAME,
+              (ConvertTo-SecureString $env:SANDBOX_VM_PASSWORD -AsPlainText -Force)
+          )
 
           function Invoke-Native {
               param(
@@ -307,7 +318,7 @@ jobs:
                             -ArgumentList @('a', '-t7z', $LocalZipPath, $SourcePath) `
                             -Description 'Compressing the publish output'
 
-              $session = New-PSSession -ComputerName $azure_vm -Credential $credential
+              $session = New-PSSession -ComputerName $AzureVm -Credential $Credential
               Invoke-Command -Session $session -ScriptBlock $RemoteHelpers
 
               Write-Host "================================================================================"
@@ -434,3 +445,40 @@ jobs:
                   Remove-Item -Path $LocalZipPath -Force
               }
           }
+
+      #######################################
+      # Tag the commit with the release tag #
+      #######################################
+      # After the deploy, so a release tag can only mean the deployment succeeded.
+      - name: Tag the commit with the release tag
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        if: ${{ env.TAG_REPOSITORY == 'true' }}
+        with:
+          script: |
+            const tagName = process.env.APP_TAG_NAME;
+            const shortRef = `tags/${tagName}`;
+            try {
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/${shortRef}`,
+                sha: context.sha
+              });
+              core.info(`Created ${tagName} at ${context.sha}.`);
+            } catch (err) {
+              if (err.status !== 422) {
+                throw err;
+              }
+              const existing = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: shortRef
+              });
+              if (existing.data.object.sha !== context.sha) {
+                throw new Error(
+                  `Tag ${tagName} already exists at ${existing.data.object.sha}, ` +
+                  `but this run deployed ${context.sha}. Version was not incremented.`
+                );
+              }
+              core.info(`Tag ${tagName} already points at ${context.sha}; nothing to do.`);
+            }
