@@ -16,25 +16,30 @@ Phases 1–7 change [the workflow](../.github/workflows/build-deploy-sandboxvm.y
 
 Status markers appear on every phase heading and on every task heading inside a phase. Update them as work lands.
 
-| Marker | Meaning                                                  |
-| ------ | -------------------------------------------------------- |
-| ✅     | Complete — merged and verified on all three environments |
-| 🔄     | In progress                                              |
-| ⬜     | Not started                                              |
-| ➖     | Reference or decision note — nothing to implement        |
+| Marker | Meaning                                                                    |
+| ------ | -------------------------------------------------------------------------- |
+| ✅     | Complete — merged and verified on all three environments                   |
+| ☑️     | Implemented — committed to `feat/sandboxvm-hardening`, not yet verified    |
+| 🔄     | In progress — some tasks in the phase are implemented, others are not      |
+| ⬜     | Not started                                                                |
+| ➖     | Reference or decision note — nothing to implement                          |
 
-| Phase                                       | Status | Notes                                                                |
-| ------------------------------------------- | ------ | -------------------------------------------------------------------- |
-| 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below.      |
-| 1 — Safety rails                            | 🔄     | Code complete; awaiting verification.                                |
-| 2 — Tag after deployment                    | 🔄     | Code complete; awaiting verification.                                |
-| 3 — Secrets, permissions, SHA pins          | 🔄     | Code complete; awaiting verification.                                |
-| 4 — Framework-dependent publish             | 🔄     | Code complete; awaiting verification.                                |
-| 5 — GitHub App installation token           | 🔄     | 5.1 done. 5.2 waits on the callers passing the App secrets.          |
-| 6 — Staged, atomic deployment with rollback | 🔄     | Code complete; awaiting verification.                                |
-| 7 — Explicit environment input              | 🔄     | 7.1 done, as an optional input. 7.2 waits on the callers.            |
-| 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.             |
+| Phase                                       | Status | Notes                                                                             |
+| ------------------------------------------- | ------ | --------------------------------------------------------------------------------- |
+| 0 — Prerequisites                           | ✅     | Completed 2026-08-12. All five tasks done; see the table below.                   |
+| 1 — Safety rails                            | ☑️     | `27592bf`                                                                         |
+| 2 — Tag after deployment                    | ☑️     | `a742f9c`                                                                         |
+| 3 — Secrets, permissions, SHA pins          | ☑️     | `a742f9c`                                                                         |
+| 4 — Framework-dependent publish             | ☑️     | `a742f9c`                                                                         |
+| 5 — GitHub App installation token           | 🔄     | 5.1 done in `a742f9c`. 5.2 waits on the callers passing the App secrets.          |
+| 6 — Staged, atomic deployment with rollback | ☑️     | `55f8971`                                                                         |
+| 7 — Explicit environment input              | 🔄     | 7.1 done in `55f8971`, as an optional input. 7.2 waits on the callers.            |
+| 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.                          |
 | 9 — Tooling                                 | 🔄     | actionlint, PSScriptAnalyzer, Dependabot and log groups done; Pester outstanding. |
+
+Everything lands on the single branch `feat/sandboxvm-hardening`. Nothing has merged to `main` and nothing has run yet, so no phase is ✅: the workflow is unused and non-functional today, which is why merging carries no risk to a live deployment. ☑️ becomes ✅ only after the [verification checklist](#verification-checklist) passes on `alpha`, `dev` and `sandbox`.
+
+**Blocking merge:** the deploy step references `SurePassId/github-workflows/.github/actions/deploy-iis-site@main`, so the composite action from phase 6 has to exist on `main` before any run can resolve it. Testing before merge means pointing that `uses:` at the branch temporarily.
 
 ---
 
@@ -42,17 +47,17 @@ Status markers appear on every phase heading and on every task heading inside a 
 
 These were discovered while writing the plan and are not in the review. Each is resolved in the phase noted.
 
-| #   | Issue                                                                                                                                  | Resolution                                                          | Phase | Status                                    |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | ----------------------------------------- |
-| I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | 🔄 Bumped and pinned; awaiting verification |
-| I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | 🔄 Implemented; awaiting verification     |
-| I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | 🔄 Implemented; awaiting verification     |
-| I4  | The shell is implicit. Under Windows PowerShell 5.1, `>>` writes UTF-16LE, which corrupts `$GITHUB_ENV` parsing                        | Declare `defaults.run.shell: pwsh`                                  | 1     | 🔄 Implemented; awaiting verification     |
-| I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | 🔄 Implemented; awaiting verification     |
-| I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | 🔄 Implemented; awaiting verification     |
-| I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | 🔄 Implemented; awaiting verification     |
-| I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | 🔄 Implemented; awaiting verification     |
-| I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | 🔄 Implemented; awaiting verification     |
+| #   | Issue                                                                                                                                  | Resolution                                                          | Phase | Status                                      |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | ------------------------------------------- |
+| I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | ☑️     |
+| I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | ☑️     |
+| I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | ☑️     |
+| I4  | The shell is implicit. Under Windows PowerShell 5.1, `>>` writes UTF-16LE, which corrupts `$GITHUB_ENV` parsing                        | Declare `defaults.run.shell: pwsh`                                  | 1     | ☑️     |
+| I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | ☑️     |
+| I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | ☑️     |
+| I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | ☑️     |
+| I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | ☑️     |
+| I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | ☑️     |
 
 **Verified as non-issues:** `actions/github-script` v9 is a breaking major (ESM; `require('@actions/github')` removed; `getOctokit` is now an injected parameter), but the tagging script here uses only `github.rest.*` and `process.env`, so it is unaffected. `echo "X=..." >> "${{ github.env }}"` is valid — `github.env` expands to the env-file path — and is safe once I4 is fixed.
 
@@ -85,13 +90,13 @@ Commit SHAs resolved from the GitHub API on 2026-08-11.
 
 ---
 
-## 🔄 Phase 1 — Safety rails (F1, F2, F7, F12, I4, I6, I7)
+## ☑️ Phase 1 — Safety rails (F1, F2, F7, F12, I4, I6, I7)
 
 **Goal:** make failures fail loudly, stop concurrent runs from colliding, and guarantee the IIS site is restarted and the session closed no matter what.
 
 Implemented on `feat/sandboxvm-hardening`, the single branch carrying every phase. `pwsh` 7.6.4 is confirmed present on the build VM, so `defaults.run.shell: pwsh` and `$PSNativeCommandUseErrorActionPreference` are both safe. Remote `Invoke-Command` sessions still run Windows PowerShell 5.1 over WinRM, so the remote side relies on `$global:ErrorActionPreference` plus `Invoke-Native` for exit-code checking.
 
-### 🔄 1.1 Workflow-level shell (I4)
+### ☑️ 1.1 Workflow-level shell (I4)
 
 ```yaml
 defaults:
@@ -99,7 +104,7 @@ defaults:
     shell: pwsh
 ```
 
-### 🔄 1.2 Job-level concurrency and timeout (F2, F12, I7)
+### ☑️ 1.2 Job-level concurrency and timeout (F2, F12, I7)
 
 ```yaml
 jobs:
@@ -115,7 +120,7 @@ jobs:
 
 > This group is evaluated in the **calling** repository's context, so it serializes an application against itself but cannot serialize the four repositories that share the VM (Q2). That protection comes from the registered runner count — which is **one** (phase 0), so cross-repository runs already serialize by queueing for the single runner. Registering a second runner on that VM would remove that accidental protection.
 
-### 🔄 1.3 Session-scoped helpers
+### ☑️ 1.3 Session-scoped helpers
 
 Functions declared `global:` inside an `Invoke-Command` persist for the life of the `PSSession`, so they are defined once and reused by every later remote call.
 
@@ -158,7 +163,7 @@ $RemoteHelpers = {
 }
 ```
 
-### 🔄 1.4 Wrap the deployment (F1)
+### ☑️ 1.4 Wrap the deployment (F1)
 
 ```powershell
 $session       = $null
@@ -207,7 +212,7 @@ Two deviations from the original sketch, both deliberate:
 - **`$iisStopped` is set _before_ the stop, not after.** A partial stop — site stopped, app pool stop throws — would otherwise leave the flag `$false` and the site down. Restarting something already running is harmless because the `finally` restart ignores exit codes.
 - **The restart is conditional on `$contentIntact`.** If the failure lands between the destructive delete and a successful extract, the site is left **stopped** on purpose. Starting it there would serve 500s from a gutted directory — equally broken, but less obvious — and `w3wp` would re-acquire handles on that directory, which can make the _next_ deployment's delete step fail. The error annotation names the backup archive to restore from. This whole branch disappears once phase 6 replaces the in-place overwrite with a staged directory and a rename swap.
 
-### 🔄 1.5 Replace the fixed sleeps (F7)
+### ☑️ 1.5 Replace the fixed sleeps (F7)
 
 Delete both `Start-Sleep -Seconds 3` calls and poll for real state instead:
 
@@ -228,7 +233,7 @@ The `appcmd stop` commands themselves also ignore their exit codes, because stop
 
 ---
 
-## 🔄 Phase 2 — Tag after deployment, idempotently (F3, I2)
+## ☑️ Phase 2 — Tag after deployment, idempotently (F3, I2)
 
 **Goal:** a release tag means the deployment succeeded.
 
@@ -275,9 +280,9 @@ The `await` is the substantive fix (I2): without it, a rejected promise never fa
 
 ---
 
-## 🔄 Phase 3 — Secrets, permissions, and SHA pins (F4, F5, I9)
+## ☑️ Phase 3 — Secrets, permissions, and SHA pins (F4, F5, I9)
 
-### 🔄 3.1 Explicit permissions
+### ☑️ 3.1 Explicit permissions
 
 ```yaml
 jobs:
@@ -286,7 +291,7 @@ jobs:
       contents: write # release tag only; narrows to the tag job in phase 8
 ```
 
-### 🔄 3.2 Secrets via the environment, not string interpolation (F4)
+### ☑️ 3.2 Secrets via the environment, not string interpolation (F4)
 
 ```yaml
 - name: Deploy files to sandboxvm
@@ -302,7 +307,7 @@ jobs:
     )
 ```
 
-### 🔄 3.3 Pin every action
+### ☑️ 3.3 Pin every action
 
 Apply the reference table above. Annotate each with its version:
 
@@ -316,9 +321,9 @@ For `copy-web-env-files`, pin the commit produced by the node24 bump in phase 0.
 
 ---
 
-## 🔄 Phase 4 — Framework-dependent publish and shallow fetch (F11, F13, Q6, Q7, I3, I5)
+## ☑️ Phase 4 — Framework-dependent publish and shallow fetch (F11, F13, Q6, Q7, I3, I5)
 
-### 🔄 4.1 RID-scoped restore, then `--no-restore` publish (I3)
+### ☑️ 4.1 RID-scoped restore, then `--no-restore` publish (I3)
 
 Both flags change together or the build breaks.
 
@@ -345,11 +350,11 @@ Both flags change together or the build breaks.
 
 `--runtime win-x64` stays so the output keeps its `apphost` and the generated `web.config` still points at `.\App.exe` (Q6).
 
-### 🔄 4.2 Drop the full-history fetch (Q7)
+### ☑️ 4.2 Drop the full-history fetch (Q7)
 
 Delete `fetch-depth: 0` from the checkout step. The default of `1` applies; no repository derives its version from history.
 
-### 🔄 4.3 Read the version without loading the assembly (F13, I5)
+### ☑️ 4.3 Read the version without loading the assembly (F13, I5)
 
 Framework-dependent output no longer carries the runtime DLLs, which makes `LoadFile` a worse bet than it already was.
 
@@ -372,7 +377,7 @@ echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
 
 The App, its installation, and both organization secrets exist as of phase 0 — only the workflow changes below remain.
 
-### 🔄 5.1 Transitional release
+### ☑️ 5.1 Transitional release
 
 Accept both credentials so callers can be migrated without a flag day.
 
@@ -424,7 +429,7 @@ Once all four repositories have deployed successfully to all three environments 
 
 ---
 
-## 🔄 Phase 6 — Staged, atomic deployment with rollback (F1, F6, I8)
+## ☑️ Phase 6 — Staged, atomic deployment with rollback (F1, F6, I8)
 
 **Goal:** the site is only down for the directory swap, and a failure leaves the previous release running.
 
@@ -440,7 +445,7 @@ IIS's physical path never changes; only what sits at that path does.
 
 All three share a parent directory, so the swap is a pair of metadata-only renames rather than a copy.
 
-### 🔄 Sequence
+### ☑️ Sequence
 
 **Site stays up:**
 
@@ -458,7 +463,7 @@ All three share a parent directory, so the swap is a pair of metadata-only renam
 
 **Downtime window closes.**
 
-### 🔄 Rollback
+### ☑️ Rollback
 
 In the `finally` from phase 1, extended:
 
@@ -475,7 +480,7 @@ Invoke-Command -Session $session -ScriptBlock {
 
 `.previous` is left in place on success and removed at the start of the next deployment, so the fast rollback source is always one release deep. The 7z archives remain as the deeper history — and are no longer what recovery depends on, which matters given they have only ever been used to pull back a single file (Q10).
 
-### 🔄 Extract the remote script
+### ☑️ Extract the remote script
 
 This phase is where the remote logic outgrows an inline `run:` block.
 
@@ -483,10 +488,10 @@ This phase is where the remote logic outgrows an inline `run:` block.
 
 What does work is a **composite action in this repository**, referenced the same way the reusable workflow itself is:
 
-| Path                                                     | Role                                                             |
-| -------------------------------------------------------- | ---------------------------------------------------------------- |
-| `.github/actions/deploy-iis-site/action.yaml`            | Input surface; runs the script from `${{ github.action_path }}`. |
-| `.github/actions/deploy-iis-site/Deploy-IisSite.ps1`     | The orchestration — a plain file, so Pester can load it.         |
+| Path                                                 | Role                                                             |
+| ---------------------------------------------------- | ---------------------------------------------------------------- |
+| `.github/actions/deploy-iis-site/action.yaml`        | Input surface; runs the script from `${{ github.action_path }}`. |
+| `.github/actions/deploy-iis-site/Deploy-IisSite.ps1` | The orchestration — a plain file, so Pester can load it.         |
 
 The script runs **on the runner** and owns the session, because the `Copy-Item -ToSession` transfer has to originate locally; only the individual `Invoke-Command` blocks execute remotely.
 
@@ -498,7 +503,7 @@ One consequence worth knowing: `uses: SurePassId/github-workflows/.github/action
 
 ## 🔄 Phase 7 — Explicit environment input (F9, Q3)
 
-### 🔄 7.1 Workflow change
+### ☑️ 7.1 Workflow change
 
 ```yaml
 on:
@@ -578,8 +583,8 @@ Deferred by decision, and gated on the runner count from phase 0 — which came 
 ## 🔄 Phase 9 — Tooling (F5, F13)
 
 - ⬜ Pester tests for `Deploy-IisSite.ps1` from phase 6. Needs the script split into functions first — as written it is a single top-to-bottom sequence.
-- 🔄 `actionlint` and PSScriptAnalyzer in CI for this repository, via `.github/workflows/lint.yaml`. Both run on GitHub-hosted `ubuntu-latest`; move them to the self-hosted runner if hosted minutes are not available.
-- 🔄 Dependabot for action updates, which is what makes SHA pinning sustainable:
+- ☑️ `actionlint` and PSScriptAnalyzer in CI for this repository, via [.github/workflows/lint.yaml](../.github/workflows/lint.yaml). Both run on GitHub-hosted `ubuntu-latest`; move them to the self-hosted runner if hosted minutes are not available.
+- ☑️ Dependabot for action updates, which is what makes SHA pinning sustainable, in [.github/dependabot.yml](../.github/dependabot.yml):
 
 ```yaml
 # .github/dependabot.yml
@@ -597,7 +602,7 @@ updates:
 
 ## Verification checklist
 
-Run per phase, on `alpha` first.
+Run per phase, on `alpha` first. **Nothing below has been run yet** — this checklist is what moves a phase from ☑️ to ✅.
 
 - [ ] Workflow parses; `actionlint` is clean.
 - [ ] `alpha` deploys and the site serves.
