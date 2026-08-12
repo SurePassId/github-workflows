@@ -70,15 +70,6 @@ jobs:
               echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
               echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
             }
-            "SurePassId/SurePassIdMfaServer" {
-              echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
-              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
-              echo "APP_NAME=api" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
-            }
             "SurePassId/SurePassIdPushServer" {
               echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
               echo "APP_NAME=push" >> "${{ github.env }}"
@@ -183,9 +174,10 @@ jobs:
                  -p:EnvironmentName=${{ env.ENV_NAME }}
 
       ####################################
-      # Copy envirinment specific files. #
+      # Copy environment specific files. #
       ####################################
       - name: Copy environment specific files in place.
+        if: ${{ env.DOT_NET_TYPE == 'framework' }}
         uses: SurePassId/copy-web-env-files@main
         with:
           deployment-environment: ${{ env.SITE_ENV }}
@@ -280,7 +272,7 @@ jobs:
           } -ArgumentList $DestinationPath
 
           Write-Host "================================================================================"
-          Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName on the remote machine."
+          Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
           Write-Host "================================================================================"
           $KeepList = "${{ env.KEEP_LIST }}"
           Invoke-Command -Session $session -ScriptBlock {
