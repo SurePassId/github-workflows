@@ -547,12 +547,21 @@ Branches are dropped entirely (Q3). All four repositories become:
 ```yaml
 on:
   workflow_dispatch:
+    inputs:
+      deployment_environment:
+        description: "Target environment"
+        type: choice
+        options: [alpha, dev, sandbox]
+        required: true
   push:
     tags: ["deploy-to-*"]
 
 jobs:
   BuildAndDeployToSandboxVM:
     uses: SurePassId/github-workflows/.github/workflows/build-deploy-sandboxvm.yaml@main
+    with:
+      # Empty on tag pushes, where the shared workflow derives the environment from the ref.
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
     secrets:
       SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
       SUBMODULE_APP_PRIVATE_KEY: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
@@ -561,18 +570,20 @@ jobs:
       SANDBOX_VM_HOSTNAME: ${{ secrets.SANDBOX_VM_HOSTNAME }}
 ```
 
-`IdentityProvider` keeps its `with: DEPLOY_APP_NAME:` and its two jobs. Nothing else passes `DEPLOYMENT_ENVIRONMENT` at all.
+`IdentityProvider` keeps its `with: DEPLOY_APP_NAME:` alongside, and its two jobs.
 
-The glob is the point: `deploy-to-*` matches whatever environments exist, so adding or renaming one is a change to the allow-list in 7.1 and nowhere else. An unknown environment — `deploy-to-prod` — still triggers a run, but it fails in the shared workflow's validation with a message naming the value, which is the correct place for that decision to be made once.
+The two triggers take different paths to the same value, and both end up in 7.1's validation:
 
-**`workflow_dispatch` keeps no inputs, and does not need any.** The **Run workflow** ref selector lists tags as well as branches, so choosing `deploy-to-alpha` there produces `refs/tags/deploy-to-alpha` — the same ref a push produces, resolved by the same code in 7.1. That is the manual re-deploy path: it replays the tag's current commit without moving anything.
+| Trigger            | `inputs.deployment_environment` | How `SITE_ENV` is resolved     |
+| ------------------ | ------------------------------- | ------------------------------ |
+| `push` on a tag    | empty — the context has no data | `refs/tags/deploy-to-<env>`    |
+| `workflow_dispatch`| the dropdown selection          | passed through as the input    |
 
-Two consequences of that:
+The tag glob is what keeps the push path central: `deploy-to-*` matches whatever environments exist, so adding one is a change to the allow-list in 7.1 and nowhere else. An unknown environment — `deploy-to-prod` — still starts a run, but fails validation with a message naming the value.
 
-- The workflow file must exist on the **default branch** for the option to appear in the UI at all; the version that runs is the one on the selected ref.
-- Dispatching from `main`, or any ordinary branch, fails in 7.1 with "cannot derive a deployment environment". That is the intended behavior — it fails closed rather than guessing — but it is worth saying out loud, because the old workflow accepted a dispatch from `DEPLOY/alpha`.
+The `choice` list is the one piece that is genuinely duplicated across the four callers, because option lists cannot be shared between workflows. That is a deliberate trade for the dropdown: it is UI only, the shared workflow remains the validator, and a stale list can offer a bad option but cannot deploy one. Adding an environment therefore means one edit in 7.1 plus four dropdown edits — and tag pushes keep working in the meantime, so the dropdown edits are not urgent.
 
-If an explicit override is ever wanted, add a `type: string` input passed to `DEPLOYMENT_ENVIRONMENT` and let 7.1 validate it. Avoid `type: choice`: the option list is not shareable, so it would put the environment names back into four files, which is the thing 7.1 exists to prevent.
+> If that duplication ever becomes annoying, the dropdown can be dropped entirely: the **Run workflow** ref selector lists tags as well as branches, so dispatching against `deploy-to-alpha` produces the same ref a push does and resolves with no input at all. Note that a dispatch from `main` or any ordinary branch then fails in 7.1 with "cannot derive a deployment environment" — it fails closed rather than guessing.
 
 Once all four have moved, delete the `refs/heads/DEPLOY/` branch of the regex in 7.1.
 
