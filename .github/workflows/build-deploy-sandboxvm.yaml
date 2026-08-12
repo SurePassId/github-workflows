@@ -9,7 +9,7 @@ on:
         required: false
         default: ""
       DEPLOYMENT_ENVIRONMENT:
-        description: "Target environment: alpha, dev, or sandbox. Falls back to the branch name when omitted."
+        description: "Target environment: alpha, dev, or sandbox. Derived from the ref when omitted."
         type: string
         required: false
         default: ""
@@ -70,10 +70,19 @@ jobs:
           }
 
       - name: Setup workflow variables
+        env:
+          # Via env rather than interpolation: a ref or input is caller-controlled text.
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
         run: |
-          $SiteEnv = '${{ inputs.DEPLOYMENT_ENVIRONMENT }}'
+          # Derived here rather than in each caller, so the set of environments lives in one place.
+          $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if (-not $SiteEnv) {
-            $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$' -or $env:GITHUB_REF -match '^refs/heads/DEPLOY/(.+)$') {
+              $SiteEnv = $Matches[1]
+            }
+            else {
+              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env> tag, or pass DEPLOYMENT_ENVIRONMENT."
+            }
           }
           if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
             Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox."

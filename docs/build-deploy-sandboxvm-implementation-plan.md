@@ -16,13 +16,13 @@ Phases 1–7 change [the workflow](../.github/workflows/build-deploy-sandboxvm.y
 
 Status markers appear on every phase heading and on every task heading inside a phase. Update them as work lands.
 
-| Marker | Meaning                                                                    |
-| ------ | -------------------------------------------------------------------------- |
-| ✅     | Complete — merged and verified on all three environments                   |
-| ☑️     | Implemented — committed to `feat/sandboxvm-hardening`, not yet verified    |
-| 🔄     | In progress — some tasks in the phase are implemented, others are not      |
-| ⬜     | Not started                                                                |
-| ➖     | Reference or decision note — nothing to implement                          |
+| Marker | Meaning                                                                 |
+| ------ | ----------------------------------------------------------------------- |
+| ✅     | Complete — merged and verified on all three environments                |
+| ☑️     | Implemented — committed to `feat/sandboxvm-hardening`, not yet verified |
+| 🔄     | In progress — some tasks in the phase are implemented, others are not   |
+| ⬜     | Not started                                                             |
+| ➖     | Reference or decision note — nothing to implement                       |
 
 | Phase                                       | Status | Notes                                                                             |
 | ------------------------------------------- | ------ | --------------------------------------------------------------------------------- |
@@ -47,8 +47,8 @@ Everything lands on the single branch `feat/sandboxvm-hardening`. Nothing has me
 
 These were discovered while writing the plan and are not in the review. Each is resolved in the phase noted.
 
-| #   | Issue                                                                                                                                  | Resolution                                                          | Phase | Status                                      |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | ------------------------------------------- |
+| #   | Issue                                                                                                                                  | Resolution                                                          | Phase | Status |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | ------ |
 | I1  | `SurePassId/copy-web-env-files` declares `using: 'node16'`, which the runner no longer honors natively                                 | Bump to `node24`, tag a release, pin by SHA                         | 0, 3  | ☑️     |
 | I2  | `github.rest.git.createRef(...)` is **not awaited** — a failed tag creation becomes an unhandled rejection and the step can still pass | `await` + explicit `try`/`catch`                                    | 2     | ☑️     |
 | I3  | `dotnet publish --runtime win-x64 --no-restore` **fails** (NETSDK1047) unless the restore was also RID-scoped                          | Add `--runtime win-x64` to `dotnet restore`                         | 4     | ☑️     |
@@ -510,16 +510,21 @@ on:
   workflow_call:
     inputs:
       DEPLOYMENT_ENVIRONMENT:
-        description: "Target environment: alpha, dev, or sandbox. Falls back to the branch name when omitted."
+        description: "Target environment: alpha, dev, or sandbox. Derived from the ref when omitted."
         type: string
         required: false
         default: ""
 ```
 
 ```powershell
-$SiteEnv = '${{ inputs.DEPLOYMENT_ENVIRONMENT }}'
+$SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
 if (-not $SiteEnv) {
-  $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+  if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$' -or $env:GITHUB_REF -match '^refs/heads/DEPLOY/(.+)$') {
+    $SiteEnv = $Matches[1]
+  }
+  else {
+    Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env> tag, or pass DEPLOYMENT_ENVIRONMENT."
+  }
 }
 if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
   Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox."
@@ -527,41 +532,58 @@ if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
 echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
 ```
 
-**Deviation:** the input is optional with a branch-name fallback, not `required: true`. Making it required would break all four callers the moment it merged, and none of them can be updated from this repository. The fallback keeps them working unchanged; 7.2 removes it once every caller passes the input explicitly.
+In a reusable workflow the `github` context is the **caller's**, so `$env:GITHUB_REF` is the ref that triggered the caller run — which is why the parsing can live here instead of being copied into four repositories. Both ref shapes are recognized so the branch trigger keeps working until every caller has moved to tags.
 
-This is a **prerequisite** for the deploy-tag trigger in Q3, not a cleanup: `refs/tags/deploy-to-alpha` reduces to `deploy-to-alpha`, which the branch-derived path rejects.
+Both the input and the ref arrive through `env:` rather than `${{ }}` interpolation. A ref name may legally contain a double quote, and the input is caller-controlled text; either one interpolated into a PowerShell literal is a script-injection vector (F4).
+
+**Deviation:** the input is optional, not `required: true`. Making it required would break all four callers the moment it merged, and none of them can be updated from this repository. More usefully, keeping it optional is what lets the callers stay ignorant of the environment list entirely — see 7.2.
+
+This is a **prerequisite** for the deploy-tag trigger in Q3: `refs/tags/deploy-to-alpha` reduces to `deploy-to-alpha` under the old last-segment split, which the allow-list rejects.
 
 ### ⬜ 7.2 Caller changes
 
-All four repositories, in the same change:
+Branches are dropped entirely (Q3). All four repositories become:
 
 ```yaml
 on:
-  workflow_dispatch:
-    inputs:
-      deployment_environment:
-        description: "Target environment"
-        type: choice
-        options: [alpha, dev, sandbox]
-        required: true
+  push:
+    tags: ["deploy-to-*"]
 
 jobs:
-  deploy:
+  BuildAndDeployToSandboxVM:
     uses: SurePassId/github-workflows/.github/workflows/build-deploy-sandboxvm.yaml@main
-    with:
-      DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
-    secrets: inherit
+    secrets:
+      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
+      SUBMODULE_APP_PRIVATE_KEY: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
+      SANDBOX_VM_USERNAME: ${{ secrets.SANDBOX_VM_USERNAME }}
+      SANDBOX_VM_PASSWORD: ${{ secrets.SANDBOX_VM_PASSWORD }}
+      SANDBOX_VM_HOSTNAME: ${{ secrets.SANDBOX_VM_HOSTNAME }}
 ```
 
-### ➖ 7.3 On the moving-tag proposal (Q3)
+`IdentityProvider` keeps its `with: DEPLOY_APP_NAME:` and its two jobs. Nothing else passes `DEPLOYMENT_ENVIRONMENT` at all.
 
-Worth weighing before implementing it as the _trigger_:
+The glob is the point: `deploy-to-*` matches whatever environments exist, so adding or renaming one is a change to the allow-list in 7.1 and nowhere else. An unknown environment — `deploy-to-prod` — still triggers a run, but it fails in the shared workflow's validation with a message naming the value, which is the correct place for that decision to be made once.
 
-- A moving tag has to be force-pushed on every deployment, so "deploy" becomes an operation anyone with push access performs with `git push --force`, with no approval gate and no audit trail beyond the reflog.
-- `workflow_dispatch` with the `choice` input above, combined with the GitHub Environments that phase 8 unlocks, gives the same convenience _plus_ required reviewers, deployment history, and environment-scoped secrets.
-- Tags created with `GITHUB_TOKEN` do not trigger workflows, so the release tags this workflow creates cannot cause a loop today — but that guarantee disappears if tagging ever moves to a PAT or App token.
+> **`workflow_dispatch` is deliberately dropped.** A dispatch runs from a branch ref, which carries no environment, so keeping it means every caller declares an input — and if it is a `choice`, the environment list is back in four files. If manual runs are wanted later, add a plain `type: string` input and let 7.1 validate it, rather than a `choice`. Re-pointing the tag is the manual path in the meantime.
 
-**Suggested alternative:** keep the moving tag as the _record_ rather than the trigger. Have the workflow update `deploy-to-<env>` to `context.sha` in the same step that creates the release tag, after a successful deployment. You still get "point me at what is running in alpha" from `git show deploy-to-alpha`, without force-push-to-deploy semantics. That is one `updateRef` call with `force: true` alongside the phase 2 script.
+Once all four have moved, delete the `refs/heads/DEPLOY/` branch of the regex in 7.1.
+
+### ➖ 7.3 Operating the moving tag (Q3)
+
+Deploying becomes:
+
+```bash
+git tag --force deploy-to-alpha <sha>
+git push --force origin deploy-to-alpha
+```
+
+Things that follow from that choice, worth setting up alongside it:
+
+- **Force-push is the deploy verb.** Anyone with push access can deploy, with no approval gate and no audit trail beyond the reflog and the run history. The `environment:` protection rules that phase 8 unlocks are the counterweight; until then, a repository ruleset restricting who may update `deploy-to-*` is the only gate.
+- **Protect the release tags separately.** A ruleset that blocks force-push and deletion on the `<env>-<version>` tags this workflow creates, while explicitly allowing it on `deploy-to-*`, keeps the deployment record immutable while the pointer stays movable.
+- **No loop today.** Tags created with `GITHUB_TOKEN` do not trigger workflows, and `deploy-to-*` would not match a release tag anyway. The first half of that guarantee disappears if tagging ever moves to a PAT or App token.
+- **Concurrency keys shift.** The group in phase 1.2 uses `github.ref_name`, which becomes `deploy-to-alpha` instead of a branch name. That still separates environments, so no change is needed — but re-pointing the same tag twice in quick succession queues rather than cancels, which is the intended behavior.
+- **The tag is also the record.** `git show deploy-to-alpha` answers "what is running in alpha" without a separate mechanism, which was the original motivation.
 
 ---
 
