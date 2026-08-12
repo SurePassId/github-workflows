@@ -1,0 +1,51 @@
+name: "Deploy to IIS site"
+description: "Stages a published .NET application on a remote Windows host and swaps it into the live IIS directory."
+
+inputs:
+  computer-name:
+    description: "Hostname of the target Windows machine."
+    required: true
+  username:
+    description: "Username for the remote PowerShell session."
+    required: true
+  password:
+    description: "Password for the remote PowerShell session."
+    required: true
+  site-env:
+    description: "Target environment: alpha, dev, or sandbox."
+    required: true
+  app-name:
+    description: "Short application name; combined with site-env to form the site's domain name."
+    required: true
+  source-path:
+    description: "Directory holding the publish output."
+    required: true
+  app-assembly:
+    description: "File name of the primary assembly, used to validate the publish output."
+    required: true
+  run-id:
+    description: "Value that makes the staging directory and temp archive unique to this run."
+    required: true
+  keep-list:
+    description: "Comma-separated files/folders carried over from the live release."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy ${{ inputs.app-name }}-${{ inputs.site-env }}.surepassid.com
+      shell: pwsh
+      env:
+        DEPLOY_PASSWORD: ${{ inputs.password }}
+      run: |
+        & "${{ github.action_path }}/Deploy-IisSite.ps1" `
+            -ComputerName '${{ inputs.computer-name }}' `
+            -UserName '${{ inputs.username }}' `
+            -Password $env:DEPLOY_PASSWORD `
+            -SiteEnv '${{ inputs.site-env }}' `
+            -AppName '${{ inputs.app-name }}' `
+            -SourcePath '${{ inputs.source-path }}' `
+            -AppAssembly '${{ inputs.app-assembly }}' `
+            -RunId '${{ inputs.run-id }}' `
+            -KeepList '${{ inputs.keep-list }}'

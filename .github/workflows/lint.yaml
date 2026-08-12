@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run actionlint
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/repo" \
+            --workdir /repo \
+            rhysd/actionlint:1.7.7 -color
+
+  pssa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+          # WriteHost is how a step writes to the run log; the password rules are unavoidable when WinRM credentials arrive as secrets.
+          $results = Invoke-ScriptAnalyzer -Path .github -Recurse -Severity Error, Warning -ExcludeRule `
+              PSAvoidUsingWriteHost,
+              PSAvoidUsingPlainTextForPassword,
+              PSAvoidUsingConvertToSecureStringWithPlainText
+          if ($results) {
+              $results | Format-Table -AutoSize | Out-String | Write-Host
+              throw "PSScriptAnalyzer reported $($results.Count) issue(s)."
+          }

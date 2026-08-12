@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # SHA pins only stay current if something bumps them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

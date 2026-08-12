@@ -31,10 +31,10 @@ Status markers appear on every phase heading and on every task heading inside a 
 | 3 — Secrets, permissions, SHA pins          | 🔄     | Code complete; awaiting verification.                                |
 | 4 — Framework-dependent publish             | 🔄     | Code complete; awaiting verification.                                |
 | 5 — GitHub App installation token           | 🔄     | 5.1 done. 5.2 waits on the callers passing the App secrets.          |
-| 6 — Staged, atomic deployment with rollback | ⬜     |                                                                      |
-| 7 — Explicit environment input              | ⬜     |                                                                      |
+| 6 — Staged, atomic deployment with rollback | 🔄     | Code complete; awaiting verification.                                |
+| 7 — Explicit environment input              | 🔄     | 7.1 done, as an optional input. 7.2 waits on the callers.            |
 | 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.             |
-| 9 — Tooling                                 | ⬜     |                                                                      |
+| 9 — Tooling                                 | 🔄     | actionlint, PSScriptAnalyzer, Dependabot and log groups done; Pester outstanding. |
 
 ---
 
@@ -51,7 +51,7 @@ These were discovered while writing the plan and are not in the review. Each is 
 | I5  | `Assembly::LoadFile` becomes more failure-prone once framework-dependent publishing removes the runtime DLLs from the output folder    | `AssemblyName::GetAssemblyName` — reads metadata without loading    | 4     | 🔄 Implemented; awaiting verification     |
 | I6  | The temp archive path is shared between concurrent runs and is never deleted                                                           | Unique per-run path, removed in `finally`                           | 1     | 🔄 Implemented; awaiting verification     |
 | I7  | `concurrency` cannot read the `env` context, so it cannot key on `APP_NAME`                                                            | Key on the `inputs` and `github` contexts                           | 1     | 🔄 Implemented; awaiting verification     |
-| I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | ⬜                                        |
+| I8  | The backup runs _inside_ the downtime window                                                                                           | Move it before the stop, using 7-Zip `-ssw` to read files held open | 6     | 🔄 Implemented; awaiting verification     |
 | I9  | `actions/github-script` v9.0.0 is an annotated tag — pinning the tag object SHA fails                                                  | Pin the **commit** SHA                                              | 3     | 🔄 Implemented; awaiting verification     |
 
 **Verified as non-issues:** `actions/github-script` v9 is a breaking major (ESM; `require('@actions/github')` removed; `getOctokit` is now an injected parameter), but the tagging script here uses only `github.rest.*` and `process.env`, so it is unaffected. `echo "X=..." >> "${{ github.env }}"` is valid — `github.env` expands to the env-file path — and is safe once I4 is fixed.
@@ -424,7 +424,7 @@ Once all four repositories have deployed successfully to all three environments 
 
 ---
 
-## ⬜ Phase 6 — Staged, atomic deployment with rollback (F1, F6, I8)
+## 🔄 Phase 6 — Staged, atomic deployment with rollback (F1, F6, I8)
 
 **Goal:** the site is only down for the directory swap, and a failure leaves the previous release running.
 
@@ -440,7 +440,7 @@ IIS's physical path never changes; only what sits at that path does.
 
 All three share a parent directory, so the swap is a pair of metadata-only renames rather than a copy.
 
-### ⬜ Sequence
+### 🔄 Sequence
 
 **Site stays up:**
 
@@ -458,7 +458,7 @@ All three share a parent directory, so the swap is a pair of metadata-only renam
 
 **Downtime window closes.**
 
-### ⬜ Rollback
+### 🔄 Rollback
 
 In the `finally` from phase 1, extended:
 
@@ -475,37 +475,56 @@ Invoke-Command -Session $session -ScriptBlock {
 
 `.previous` is left in place on success and removed at the start of the next deployment, so the fast rollback source is always one release deep. The 7z archives remain as the deeper history — and are no longer what recovery depends on, which matters given they have only ever been used to pull back a single file (Q10).
 
-### ⬜ Extract the remote script
+### 🔄 Extract the remote script
 
-This phase is where the remote logic outgrows an inline `run:` block. Move it to `scripts/Deploy-IisSite.ps1` in this repository and invoke it with `Invoke-Command -Session $session -FilePath .\scripts\Deploy-IisSite.ps1 -ArgumentList ...`, which ships a local file to the remote session without needing it installed on the VM. That also makes the Pester work in phase 9 possible.
+This phase is where the remote logic outgrows an inline `run:` block.
+
+**Correction to the original sketch.** It proposed `scripts/Deploy-IisSite.ps1` invoked with `Invoke-Command -Session $session -FilePath .\scripts\Deploy-IisSite.ps1`. That cannot work: a reusable workflow only ever has the **caller's** repository checked out, so no file from this repository is on disk. `uses: ./...` has the same problem — it resolves against the caller's workspace.
+
+What does work is a **composite action in this repository**, referenced the same way the reusable workflow itself is:
+
+| Path                                                     | Role                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| `.github/actions/deploy-iis-site/action.yaml`            | Input surface; runs the script from `${{ github.action_path }}`. |
+| `.github/actions/deploy-iis-site/Deploy-IisSite.ps1`     | The orchestration — a plain file, so Pester can load it.         |
+
+The script runs **on the runner** and owns the session, because the `Copy-Item -ToSession` transfer has to originate locally; only the individual `Invoke-Command` blocks execute remotely.
+
+One consequence worth knowing: `uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@main` is resolved independently of the workflow file, so the action has to exist on `main` before a run can use it. Testing the pair on a branch means pointing that `uses:` at the branch for the duration.
 
 **Verify:** deliberately corrupt the archive on a scratch branch and confirm the site is still serving the previous release when the run fails. Measure the downtime window before and after — it should drop from "backup + delete + transfer + extract" to "two renames".
 
 ---
 
-## ⬜ Phase 7 — Explicit environment input (F9, Q3)
+## 🔄 Phase 7 — Explicit environment input (F9, Q3)
 
-### ⬜ 7.1 Workflow change
+### 🔄 7.1 Workflow change
 
 ```yaml
 on:
   workflow_call:
     inputs:
       DEPLOYMENT_ENVIRONMENT:
-        description: "Target environment: alpha, dev, or sandbox."
+        description: "Target environment: alpha, dev, or sandbox. Falls back to the branch name when omitted."
         type: string
-        required: true
+        required: false
+        default: ""
 ```
 
 ```powershell
 $SiteEnv = '${{ inputs.DEPLOYMENT_ENVIRONMENT }}'
-if ('alpha', 'dev', 'sandbox' -notcontains $SiteEnv) {
-    throw "Invalid DEPLOYMENT_ENVIRONMENT: '$SiteEnv'. Expected alpha, dev, or sandbox."
+if (-not $SiteEnv) {
+  $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+}
+if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
+  Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox."
 }
 echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
 ```
 
-The `github.ref` split is removed. This is a **prerequisite** for the deploy-tag trigger in Q3, not a cleanup: `refs/tags/deploy-to-alpha` reduces to `deploy-to-alpha`, which the current allow-list rejects.
+**Deviation:** the input is optional with a branch-name fallback, not `required: true`. Making it required would break all four callers the moment it merged, and none of them can be updated from this repository. The fallback keeps them working unchanged; 7.2 removes it once every caller passes the input explicitly.
+
+This is a **prerequisite** for the deploy-tag trigger in Q3, not a cleanup: `refs/tags/deploy-to-alpha` reduces to `deploy-to-alpha`, which the branch-derived path rejects.
 
 ### ⬜ 7.2 Caller changes
 
@@ -556,11 +575,11 @@ Deferred by decision, and gated on the runner count from phase 0 — which came 
 
 ---
 
-## ⬜ Phase 9 — Tooling (F5, F13)
+## 🔄 Phase 9 — Tooling (F5, F13)
 
-- Pester tests for `scripts/Deploy-IisSite.ps1` from phase 6.
-- `actionlint` in CI for this repository.
-- Dependabot for action updates, which is what makes SHA pinning sustainable:
+- ⬜ Pester tests for `Deploy-IisSite.ps1` from phase 6. Needs the script split into functions first — as written it is a single top-to-bottom sequence.
+- 🔄 `actionlint` and PSScriptAnalyzer in CI for this repository, via `.github/workflows/lint.yaml`. Both run on GitHub-hosted `ubuntu-latest`; move them to the self-hosted runner if hosted minutes are not available.
+- 🔄 Dependabot for action updates, which is what makes SHA pinning sustainable:
 
 ```yaml
 # .github/dependabot.yml
@@ -572,7 +591,7 @@ updates:
       interval: weekly
 ```
 
-- Log groups (`::group::`) and `$GITHUB_STEP_SUMMARY` in place of the `====` separator lines.
+- 🔄 Log groups (`::group::`) and `$GITHUB_STEP_SUMMARY` in place of the `====` separator lines. The groups are in `Deploy-IisSite.ps1`; the step summary is not written yet.
 
 ---
 
