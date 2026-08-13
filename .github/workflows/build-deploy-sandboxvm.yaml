@@ -64,12 +64,6 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Clean workspace
-        run: |
-          if (Test-Path -Path "${{ github.workspace }}") {
-            Remove-Item -Recurse -Force -Path "${{ github.workspace }}\*"
-          }
-
       - name: Setup workflow variables
         env:
           # Via env rather than interpolation: a ref or input is caller-controlled text.
@@ -162,6 +156,14 @@ jobs:
           submodules: "recursive"
           token: ${{ steps.submodule_token.outputs.token }}
           persist-credentials: false
+
+      # Neither publish path removes files that are no longer produced (MSBuild runs with DeleteExistingFiles=False,
+      # and `dotnet publish --output` only overwrites), so a stale assembly would otherwise be deployed.
+      - name: Clean publish directory
+        run: |
+          if (Test-Path -LiteralPath "${{ env.PUBLISH_DIR }}") {
+            Remove-Item -LiteralPath "${{ env.PUBLISH_DIR }}" -Recurse -Force
+          }
 
       ########################
       # .NET Framework steps #
