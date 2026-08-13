@@ -14,13 +14,10 @@ on:
         required: false
         default: ""
     secrets:
-      # Transitional: callers pass either the App credentials or the PAT. The PAT goes away once all four have migrated.
-      GH_ACTIONS_PAT:
-        required: false
       SUBMODULE_APP_ID:
-        required: false
+        required: true
       SUBMODULE_APP_PRIVATE_KEY:
-        required: false
+        required: true
       SANDBOX_VM_USERNAME:
         required: true
       SANDBOX_VM_PASSWORD:
@@ -54,9 +51,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write # release tag only
-    env:
-      # The `secrets` context is unavailable in a step-level `if`, so presence is surfaced through `env`.
-      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
     concurrency:
       # Evaluated in the calling repository's context, so this serializes an app against itself only.
       group: sandboxvm-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}
@@ -77,7 +71,7 @@ jobs:
           # Derived here rather than in each caller, so the set of environments lives in one place.
           $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if (-not $SiteEnv) {
-            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$' -or $env:GITHUB_REF -match '^refs/heads/DEPLOY/(.+)$') {
+            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$') {
               $SiteEnv = $Matches[1]
             }
             else {
@@ -148,7 +142,6 @@ jobs:
       ##################
       - name: Mint submodule token
         id: submodule_token
-        if: ${{ env.SUBMODULE_APP_ID != '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           # `app-id` is deprecated in favour of `client-id`; switch once the org secret holds the App's client ID.
@@ -160,7 +153,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: "recursive"
-          token: ${{ steps.submodule_token.outputs.token || secrets.GH_ACTIONS_PAT }}
+          token: ${{ steps.submodule_token.outputs.token }}
           persist-credentials: false
 
       ########################

@@ -9,13 +9,11 @@ This is a centralized repository containing reusable GitHub Actions workflows fo
 ### Workflow Categories
 
 1. **Build Workflows**: Platform-specific build processes for different .NET versions
-
    - `build-dot-net-fwk.yaml`: .NET Framework 4.8 builds (uses windows-2019, MSBuild)
    - `build-dot-net6.yaml`: .NET 6 builds (uses dotnet CLI)
    - `build-dot-net8.yaml`: .NET 8 builds (uses dotnet CLI)
 
 2. **Deployment Workflows**: Target-specific deployment strategies
-
    - `deploy-to-app-service.yaml`: Azure App Service deployments with slot support
    - `build-deploy-sandboxvm.yaml`: Self-hosted Windows VM deployments with IIS
 
@@ -56,7 +54,7 @@ Consistent artifact naming: `app-{APP}-{SLOT}` enables multi-slot deployments an
 
 #### Required Secrets
 
-- `GH_ACTIONS_PAT`: GitHub Actions token for accessing private repos/submodules
+- `SUBMODULE_APP_ID` / `SUBMODULE_APP_PRIVATE_KEY`: GitHub App credentials; a short-lived installation token is minted per run for private repos/submodules
 - `SSH_KEY`: For checking out repositories with submodules
 - `PUBLISH_PROFILE`: Azure App Service publish profiles
 - `POSTMAN_API_KEY`: For API testing automation

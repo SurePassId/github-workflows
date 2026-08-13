@@ -31,7 +31,7 @@ Status markers appear on every phase heading and on every task heading inside a 
 | 2 — Tag after deployment                    | ☑️     | `a742f9c`                                                                         |
 | 3 — Secrets, permissions, SHA pins          | ☑️     | `a742f9c`                                                                         |
 | 4 — Framework-dependent publish             | ☑️     | `a742f9c`                                                                         |
-| 5 — GitHub App installation token           | 🔄     | 5.1 done in `a742f9c`. 5.2 waits on the callers passing the App secrets.          |
+| 5 — GitHub App installation token           | 🔄     | 5.1 done; the PAT fallback is gone. 5.2 is the org-level PAT revocation.          |
 | 6 — Staged, atomic deployment with rollback | ☑️     | `55f8971`                                                                         |
 | 7 — Explicit environment input              | 🔄     | 7.1 done in `55f8971`, as an optional input. 7.2 waits on the callers.            |
 | 8 — Split into separate jobs                | ⬜     | Deferred by decision. The single runner makes it costly.                          |
@@ -377,32 +377,23 @@ echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
 
 The App, its installation, and both organization secrets exist as of phase 0 — only the workflow changes below remain.
 
-### ☑️ 5.1 Transitional release
+### ☑️ 5.1 App token only
 
-Accept both credentials so callers can be migrated without a flag day.
+The App is the sole checkout credential. There is no PAT fallback, so a missing or invalid App secret fails the run rather than silently degrading.
 
 ```yaml
 on:
   workflow_call:
     secrets:
-      GH_ACTIONS_PAT:
-        required: false
       SUBMODULE_APP_ID:
-        required: false
+        required: true
       SUBMODULE_APP_PRIVATE_KEY:
-        required: false
+        required: true
 ```
 
 ```yaml
-jobs:
-  BuildAndDeployToSandboxVM:
-    env:
-      # The `secrets` context is not available in a step-level `if`, so presence has to be surfaced through `env`.
-      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
-
 - name: Mint submodule token
   id: submodule_token
-  if: ${{ env.SUBMODULE_APP_ID != '' }}
   uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
   with:
     app-id: ${{ secrets.SUBMODULE_APP_ID }}
@@ -413,17 +404,19 @@ jobs:
   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     submodules: recursive
-    token: ${{ steps.submodule_token.outputs.token || secrets.GH_ACTIONS_PAT }}
+    token: ${{ steps.submodule_token.outputs.token }}
     persist-credentials: false
 ```
 
 `app-id` carries a deprecation warning in v3 — the action prefers `client-id`. Swapping the organization secret's value from the App ID to the App's client ID and renaming the input clears it; the two are interchangeable otherwise.
 
-If callers use `secrets: inherit`, organization secrets reach the workflow with no caller change. If any caller maps secrets explicitly, add the two there.
+`run-postman-tests.yaml` checks out `SurePassId/PostmanFiles` and was on the same PAT. It now mints its own token from the same App, scoped with `repositories: PostmanFiles`.
 
-### ⬜ 5.2 Cleanup release
+Callers map secrets explicitly, so each of the four has to pass the two App secrets. `GH_ACTIONS_PAT` is deleted from every caller in the same change.
 
-Once all four repositories have deployed successfully to all three environments on App tokens: make the App secrets `required: true`, delete `GH_ACTIONS_PAT` from the `secrets:` block and from the callers, revoke the PAT, and update the README.
+### ⬜ 5.2 Revoke the PAT
+
+A repository-level change cannot finish this. Once all four repositories have deployed successfully to all three environments: revoke the PAT, delete the `GH_ACTIONS_PAT` organization secret, and confirm nothing else in the organization referenced it.
 
 **Verify:** the checkout log shows submodules resolving, and the App's installation shows the expected repositories and only `contents: read`.
 
@@ -519,7 +512,7 @@ on:
 ```powershell
 $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
 if (-not $SiteEnv) {
-  if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$' -or $env:GITHUB_REF -match '^refs/heads/DEPLOY/(.+)$') {
+  if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$') {
     $SiteEnv = $Matches[1]
   }
   else {
@@ -532,13 +525,13 @@ if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
 echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
 ```
 
-In a reusable workflow the `github` context is the **caller's**, so `$env:GITHUB_REF` is the ref that triggered the caller run — which is why the parsing can live here instead of being copied into four repositories. Both ref shapes are recognized so the branch trigger keeps working until every caller has moved to tags.
+In a reusable workflow the `github` context is the **caller's**, so `$env:GITHUB_REF` is the ref that triggered the caller run — which is why the parsing can live here instead of being copied into four repositories.
 
 Both the input and the ref arrive through `env:` rather than `${{ }}` interpolation. A ref name may legally contain a double quote, and the input is caller-controlled text; either one interpolated into a PowerShell literal is a script-injection vector (F4).
 
-**Deviation:** the input is optional, not `required: true`. Making it required would break all four callers the moment it merged, and none of them can be updated from this repository. More usefully, keeping it optional is what lets the callers stay ignorant of the environment list entirely — see 7.2.
+The branch-derived path is **gone**, not deprecated: `refs/heads/DEPLOY/alpha` no longer resolves to anything. The only two ways in are a `deploy-to-<env>` tag or an explicit input.
 
-This is a **prerequisite** for the deploy-tag trigger in Q3: `refs/tags/deploy-to-alpha` reduces to `deploy-to-alpha` under the old last-segment split, which the allow-list rejects.
+**Deviation:** the input is optional, not `required: true`. Keeping it optional is what lets a tag push carry the environment without any caller passing it — see 7.2.
 
 ### ⬜ 7.2 Caller changes
 
@@ -574,18 +567,16 @@ jobs:
 
 The two triggers take different paths to the same value, and both end up in 7.1's validation:
 
-| Trigger            | `inputs.deployment_environment` | How `SITE_ENV` is resolved     |
-| ------------------ | ------------------------------- | ------------------------------ |
-| `push` on a tag    | empty — the context has no data | `refs/tags/deploy-to-<env>`    |
-| `workflow_dispatch`| the dropdown selection          | passed through as the input    |
+| Trigger             | `inputs.deployment_environment` | How `SITE_ENV` is resolved  |
+| ------------------- | ------------------------------- | --------------------------- |
+| `push` on a tag     | empty — the context has no data | `refs/tags/deploy-to-<env>` |
+| `workflow_dispatch` | the dropdown selection          | passed through as the input |
 
 The tag glob is what keeps the push path central: `deploy-to-*` matches whatever environments exist, so adding one is a change to the allow-list in 7.1 and nowhere else. An unknown environment — `deploy-to-prod` — still starts a run, but fails validation with a message naming the value.
 
-The `choice` list is the one piece that is genuinely duplicated across the four callers, because option lists cannot be shared between workflows. That is a deliberate trade for the dropdown: it is UI only, the shared workflow remains the validator, and a stale list can offer a bad option but cannot deploy one. Adding an environment therefore means one edit in 7.1 plus four dropdown edits — and tag pushes keep working in the meantime, so the dropdown edits are not urgent.
+The `choice` list is the one piece that is genuinely duplicated across the four callers, because option lists cannot be shared between workflows. That is a deliberate trade for the dropdown: it is UI only, the shared workflow remains the validator, and a stale list can offer a bad option but cannot deploy one.
 
 > If that duplication ever becomes annoying, the dropdown can be dropped entirely: the **Run workflow** ref selector lists tags as well as branches, so dispatching against `deploy-to-alpha` produces the same ref a push does and resolves with no input at all. Note that a dispatch from `main` or any ordinary branch then fails in 7.1 with "cannot derive a deployment environment" — it fails closed rather than guessing.
-
-Once all four have moved, delete the `refs/heads/DEPLOY/` branch of the regex in 7.1.
 
 ### ➖ 7.3 Operating the moving tag (Q3)
 

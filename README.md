@@ -92,7 +92,7 @@ jobs:
 name: Deploy to Sandbox VM
 on:
   push:
-    branches: [sandbox]
+    tags: ["deploy-to-*"]
 
 jobs:
   build-and-deploy:
@@ -100,7 +100,8 @@ jobs:
     with:
       DEPLOY_APP_NAME: "oidc"
     secrets:
-      GH_ACTIONS_PAT: ${{ secrets.GH_ACTIONS_PAT }}
+      SUBMODULE_APP_ID: ${{ secrets.SUBMODULE_APP_ID }}
+      SUBMODULE_APP_PRIVATE_KEY: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
       SANDBOX_VM_USERNAME: ${{ secrets.SANDBOX_VM_USERNAME }}
       SANDBOX_VM_PASSWORD: ${{ secrets.SANDBOX_VM_PASSWORD }}
       SANDBOX_VM_HOSTNAME: ${{ secrets.SANDBOX_VM_HOSTNAME }}
@@ -114,12 +115,12 @@ Configure these organization/repository secrets for workflows to function:
 
 Two credentials are in use and they are **not** interchangeable — pass the one the workflow you are calling declares:
 
-| Secret           | Passed to `actions/checkout` as | Used by                                                                |
-| ---------------- | ------------------------------- | ---------------------------------------------------------------------- |
-| `SSH_KEY`        | `ssh-key`                       | `build-dot-net-fwk.yaml`, `build-dot-net6.yaml`, `build-dot-net8.yaml` |
-| `GH_ACTIONS_PAT` | `token`                         | `build-deploy-sandboxvm.yaml`, `run-postman-tests.yaml`                |
+| Secret                                           | Passed to `actions/checkout` as | Used by                                                                |
+| ------------------------------------------------ | ------------------------------- | ---------------------------------------------------------------------- |
+| `SSH_KEY`                                        | `ssh-key`                       | `build-dot-net-fwk.yaml`, `build-dot-net6.yaml`, `build-dot-net8.yaml` |
+| `SUBMODULE_APP_ID` + `SUBMODULE_APP_PRIVATE_KEY` | `token`                         | `build-deploy-sandboxvm.yaml`, `run-postman-tests.yaml`                |
 
-`GH_ACTIONS_PAT` is a fine-grained PAT scoped to the submodule repositories. It is slated for replacement by a GitHub App installation token — see [docs/build-deploy-sandboxvm-implementation-plan.md](docs/build-deploy-sandboxvm-implementation-plan.md).
+The `SUBMODULE_APP_*` pair identifies a GitHub App whose installation token is minted per run and expires in about an hour. It replaced `GH_ACTIONS_PAT` — see [docs/build-deploy-sandboxvm-implementation-plan.md](docs/build-deploy-sandboxvm-implementation-plan.md).
 
 ### Azure App Service
 
