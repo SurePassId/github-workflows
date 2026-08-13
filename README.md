@@ -92,7 +92,7 @@ jobs:
 name: Deploy to Sandbox VM
 on:
   push:
-    tags: ["deploy-to-*"]
+    tags: ["deploy2*"]
 
 jobs:
   build-and-deploy:

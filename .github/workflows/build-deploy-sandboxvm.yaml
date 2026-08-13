@@ -57,9 +57,9 @@ jobs:
       group: >-
         sandboxvm-${{ github.repository }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}-${{
           inputs.DEPLOYMENT_ENVIRONMENT
-          || (startsWith(github.ref_name, 'deploy-to-alpha') && 'alpha')
-          || (startsWith(github.ref_name, 'deploy-to-dev') && 'dev')
-          || (startsWith(github.ref_name, 'deploy-to-sandbox') && 'sandbox')
+          || (startsWith(github.ref_name, 'deploy2alpha') && 'alpha')
+          || (startsWith(github.ref_name, 'deploy2dev') && 'dev')
+          || (startsWith(github.ref_name, 'deploy2sandbox') && 'sandbox')
           || github.ref_name }}
       cancel-in-progress: false
 
@@ -73,11 +73,11 @@ jobs:
           $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if (-not $SiteEnv) {
             # Optional trailing UTC timestamp: deploy tags are unique per deploy, since a moved tag does not reliably trigger a workflow.
-            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(alpha|dev|sandbox)(-\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2})?$') {
+            if ($env:GITHUB_REF -match '^refs/tags/deploy2(alpha|dev|sandbox)(-\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2})?$') {
               $SiteEnv = $Matches[1]
             }
             else {
-              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env>-<yyyy.MM.dd>-<HH.mm.ss> tag, or pass DEPLOYMENT_ENVIRONMENT."
+              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy2<env>-<yyyy.MM.dd>-<HH.mm.ss> tag, or pass DEPLOYMENT_ENVIRONMENT."
             }
           }
           if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
