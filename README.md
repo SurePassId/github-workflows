@@ -150,6 +150,27 @@ The `SUBMODULE_APP_*` pair identifies a GitHub App whose installation token is m
 - **Backup System**: Automatic 7z backups with 3-backup retention
 - **Service Management**: IIS `appcmd` for site/pool control
 
+## Action Pinning Policy
+
+Every `uses:` reference must be pinned to a full 40-character commit SHA, with the human-readable version in a trailing comment:
+
+```yaml
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+Tags and branches (`@v4`, `@main`) are mutable — whoever controls the upstream repository can re-point them at different code, and every workflow in the org picks it up on the next run. This is not hypothetical: the `tj-actions/changed-files` compromise (March 2025, [CVE-2025-30066](https://nvd.nist.gov/vuln/detail/CVE-2025-30066)) retagged existing releases to a commit that dumped CI secrets into build logs. SHA-pinned consumers were unaffected.
+
+The risk is amplified here because builds run on the self-hosted `windows-build-vm` runner, which has persistent access to internal networks and the IIS deploy path — a malicious action is not confined to a throwaway container.
+
+The trailing version comment is maintained automatically by Dependabot, which updates both the SHA and the comment when a new release ships.
+
+### References
+
+- [GitHub — Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions)
+- [GitHub — Keeping your actions up to date with Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot)
+- [OpenSSF Scorecard — Pinned-Dependencies check](https://github.com/ossf/scorecard/blob/main/docs/checks.md#pinned-dependencies)
+- [OpenSSF — Secure Supply Chain Consumption Framework](https://best.openssf.org/SCM-BestPractices/)
+
 ## Development
 
 ### Adding New Repository Support
