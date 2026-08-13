@@ -31,11 +31,12 @@ jobs:
         run: |
           $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if (-not $SiteEnv) {
-            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$') {
+            # Optional trailing UTC timestamp: deploy tags are unique per deploy, since a moved tag does not reliably trigger a workflow.
+            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(alpha|dev|sandbox)(-\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2})?$') {
               $SiteEnv = $Matches[1]
             }
             else {
-              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env> tag, or pass DEPLOYMENT_ENVIRONMENT."
+              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env>-<yyyy.MM.dd>-<HH.mm.ss> tag, or pass DEPLOYMENT_ENVIRONMENT."
             }
           }
           if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {

@@ -52,8 +52,15 @@ jobs:
     permissions:
       contents: write # release tag only
     concurrency:
-      # Evaluated in the calling repository's context, so this serializes an app against itself only.
-      group: sandboxvm-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}
+      # Keyed on the environment, not on github.ref_name: deploy tags are unique per deploy, so ref_name would never collide.
+      # The `env` context is unavailable here, hence the expression restates the tag parsing done in "Setup workflow variables".
+      group: >-
+        sandboxvm-${{ github.repository }}-${{ inputs.DEPLOY_APP_NAME || 'default' }}-${{
+          inputs.DEPLOYMENT_ENVIRONMENT
+          || (startsWith(github.ref_name, 'deploy-to-alpha') && 'alpha')
+          || (startsWith(github.ref_name, 'deploy-to-dev') && 'dev')
+          || (startsWith(github.ref_name, 'deploy-to-sandbox') && 'sandbox')
+          || github.ref_name }}
       cancel-in-progress: false
 
     steps:
@@ -71,11 +78,12 @@ jobs:
           # Derived here rather than in each caller, so the set of environments lives in one place.
           $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if (-not $SiteEnv) {
-            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(.+)$') {
+            # Optional trailing UTC timestamp: deploy tags are unique per deploy, since a moved tag does not reliably trigger a workflow.
+            if ($env:GITHUB_REF -match '^refs/tags/deploy-to-(alpha|dev|sandbox)(-\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2})?$') {
               $SiteEnv = $Matches[1]
             }
             else {
-              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env> tag, or pass DEPLOYMENT_ENVIRONMENT."
+              Throw "Cannot derive a deployment environment from '$($env:GITHUB_REF)'. Push a deploy-to-<env>-<yyyy.MM.dd>-<HH.mm.ss> tag, or pass DEPLOYMENT_ENVIRONMENT."
             }
           }
           if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
@@ -240,7 +248,8 @@ jobs:
       #############################
       - name: Deploy ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com to sandboxvm
         # Pinned to this repository rather than `./` because a reusable workflow only ever has the *caller's* repository checked out.
-        uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@main
+        # TODO: repoint to a commit SHA on main once this branch merges — the action does not exist on main yet.
+        uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@feat/sandboxvm-hardening
         with:
           computer-name: ${{ secrets.SANDBOX_VM_HOSTNAME }}
           username: ${{ secrets.SANDBOX_VM_USERNAME }}
