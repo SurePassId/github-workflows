@@ -90,6 +90,18 @@ jobs:
         env:
           PUBLISH_PATH: ${{steps.publish-directory.outputs.path}}
         run: |
-          if (Test-Path -LiteralPath $env:PUBLISH_PATH) {
-            Remove-Item -LiteralPath $env:PUBLISH_PATH -Recurse -Force -ErrorAction Stop
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            if (-not (Test-Path -LiteralPath $env:PUBLISH_PATH)) {
+              break
+            }
+            try {
+              Remove-Item -LiteralPath $env:PUBLISH_PATH -Recurse -Force -ErrorAction Stop
+              break
+            }
+            catch {
+              if (($_.Exception.HResult -band 0xFFFF) -ne 145 -or $attempt -eq 3) {
+                throw
+              }
+              Write-Warning "Publish directory is not empty after cleanup attempt ${attempt}; retrying."
+            }
           }
