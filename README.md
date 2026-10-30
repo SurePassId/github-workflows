@@ -15,6 +15,7 @@ This repository contains workflow templates that are called from other SurePassI
 | `build-dot-net-fwk.yaml` | .NET Framework 4.8 builds | Framework 4.8 | windows-2019   |
 | `build-dot-net6.yaml`    | .NET 6 applications       | 6.0.x         | windows-latest |
 | `build-dot-net8.yaml`    | .NET 8 applications       | 8.0.x         | windows-latest |
+| [build-dot-net-modern.yaml](.github/workflows/build-dot-net-modern.yaml) | .NET 10+ applications | Caller-selected stable `N.0.x` | windows-latest |
 
 ### Deployment Workflows
 
@@ -86,6 +87,40 @@ jobs:
       PUBLISH_PROFILE: ${{ secrets.PUBLISH_PROFILE }}
 ```
 
+### .NET 10+ Build
+
+Use the [modern builder](.github/workflows/build-dot-net-modern.yaml) for .NET 10
+and later released SDKs. The .NET 8 builder is unchanged.
+Replace the placeholder below with the full published commit SHA containing the
+modern builder before using this example.
+
+```yaml
+jobs:
+  build:
+    uses: SurePassId/github-workflows/.github/workflows/build-dot-net-modern.yaml@REPLACE_WITH_PUBLISHED_40_CHARACTER_COMMIT_SHA
+    with:
+      APP: "api"
+      SLOT: "stage"
+      DEPLOY_ENV: "prod"
+      BUILD_CONFIG: "Release"
+      BUILD_PROJECT: 'SurePassIdApiServer\SurePassIdApiServer.csproj'
+      DOTNET_VERSION: '10.0.x'
+    secrets:
+      SSH_KEY: ${{ secrets.AZURE_SSH_KEY }}
+```
+
+All six inputs and `SSH_KEY` are required. `DOTNET_VERSION` accepts only stable
+channels in `N.0.x` form with a major version of at least 10. The builder fails
+if the selected SDK is a preview or does not match the requested major. Keep any
+caller-owned `global.json` aligned with that channel; it is never overwritten.
+Restore targets only `BUILD_PROJECT` using NuGet.org, and publish uses
+`--no-restore`. Project files determine target frameworks and publishing mode.
+
+The artifact remains `app-{APP}-{SLOT}`, so existing App Service deployment jobs
+can consume it unchanged. The hosting target must separately support the
+application's runtime. See the [implementation and rollout guide](docs/dotnet-10-plus-workflow-update.md)
+for SDK selection details, validation, and rollback.
+
 ### Sandbox VM Deployment
 
 ```yaml
@@ -153,6 +188,13 @@ Configure these organization/repository secrets for workflows to function:
 4. Update Postman test configurations if applicable
 
 ### Adding New .NET Version
+
+For .NET 10 and later, reuse
+[build-dot-net-modern.yaml](.github/workflows/build-dot-net-modern.yaml) with the
+new stable `DOTNET_VERSION` channel. Validate SDK selection, application
+compatibility, and target hosting support before deployment.
+
+For legacy version-specific builders:
 
 1. Copy existing `build-dot-net{X}.yaml` workflow
 2. Update `dotnet-version` in setup step
