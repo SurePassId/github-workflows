@@ -9,7 +9,7 @@ on:
         type: string
         required: false
         default: ''
-    secrets: 
+    secrets:
       GH_ACTIONS_PAT:
         required: true
       SANDBOX_VM_USERNAME:
@@ -64,16 +64,7 @@ jobs:
             "SurePassId/SurePassIdApiServer" {
               echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
-              echo "APP_NAME=api" >> "${{ github.env }}"
-              echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
-              echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
-              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
-            }
-            "SurePassId/SurePassIdMfaServer" {
-              echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
-              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=10.0.x" >> "${{ github.env }}"
               echo "APP_NAME=api" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
@@ -209,7 +200,7 @@ jobs:
         if: ${{ env.TAG_REPOSITORY == 'true' }}
         with:
           script: |
-            const {APP_TAG_NAME} = process.env          
+            const {APP_TAG_NAME} = process.env
             github.rest.git.createRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -227,7 +218,7 @@ jobs:
           $SiteDomainName = "$App-$SiteEnv.surepassid.com"
           $SourcePath = "${{ env.PUBLISH_DIR }}\*"
           $DestinationPath = "E:\iis_sites\$SiteEnv\$SiteDomainName"
-          
+
           $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
           $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
           $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
@@ -280,7 +271,7 @@ jobs:
           } -ArgumentList $DestinationPath
 
           Write-Host "================================================================================"
-          Write-Host "Deleteing the files in $DestinationPath on $SiteDomainName on the remote machine."
+          Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
           Write-Host "================================================================================"
           $KeepList = "${{ env.KEEP_LIST }}"
           Invoke-Command -Session $session -ScriptBlock {
