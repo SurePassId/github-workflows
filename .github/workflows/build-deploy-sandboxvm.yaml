@@ -47,10 +47,10 @@ jobs:
 
       - name: Setup workflow variables
         run: |
-          $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
-          if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
-            Throw "Invalid branch: ${{ github.ref }}"
+          if ($env:GITHUB_REF -notmatch '^refs/tags/deploy2(?<siteEnv>alpha|dev|sandbox)-.*$') {
+            Throw "Invalid deployment tag: $env:GITHUB_REF"
           }
+          $SiteEnv = $Matches.siteEnv
           echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
 
           switch ("${{ github.repository }}") {
