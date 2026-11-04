@@ -1,0 +1,53 @@
+name: Deploy IIS site
+description: Stage, preserve, swap and verify a Windows IIS release with rollback.
+inputs:
+  computer-name:
+    description: WinRM computer name
+    required: true
+  username:
+    description: WinRM username
+    required: true
+  password:
+    description: WinRM password
+    required: true
+  site-env:
+    description: alpha, dev, or sandbox
+    required: true
+  app-name:
+    description: api, mfa, push, oidc, or oidc-client
+    required: true
+  source-path:
+    description: Published application directory
+    required: true
+  app-assembly:
+    description: Safe relative assembly path; a leading slash is permitted
+    required: true
+  run-id:
+    description: Numeric GitHub run ID followed by hyphen and numeric attempt
+    required: true
+  keep-list:
+    description: Comma-separated direct child names copied from the stopped release
+    required: false
+    default: ''
+  health-check-url:
+    description: Required HTTPS URL on app-env.surepassid.com returning exact HTTP 200
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Deploy and verify IIS release
+      shell: pwsh
+      env:
+        DEPLOY_ACTION_PATH: ${{ github.action_path }}
+        DEPLOY_COMPUTER_NAME: ${{ inputs.computer-name }}
+        DEPLOY_USERNAME: ${{ inputs.username }}
+        DEPLOY_PASSWORD: ${{ inputs.password }}
+        DEPLOY_SITE_ENV: ${{ inputs.site-env }}
+        DEPLOY_APP_NAME: ${{ inputs.app-name }}
+        DEPLOY_SOURCE_PATH: ${{ inputs.source-path }}
+        DEPLOY_APP_ASSEMBLY: ${{ inputs.app-assembly }}
+        DEPLOY_RUN_ID: ${{ inputs.run-id }}
+        DEPLOY_KEEP_LIST: ${{ inputs.keep-list }}
+        DEPLOY_HEALTH_CHECK_URL: ${{ inputs.health-check-url }}
+      run: |
+        & (Join-Path $env:DEPLOY_ACTION_PATH 'Deploy-IisSite.ps1')
