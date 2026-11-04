@@ -4,13 +4,17 @@ name: Build and deploy to SANDBOXVM
 on:
   workflow_call:
     inputs:
+      SUBMODULE_APP_CLIENT_ID:
+        description: 'GitHub App Client ID used for read-only recursive submodule checkout.'
+        type: string
+        required: true
       DEPLOY_APP_NAME:
         description: 'The app name to deploy.'
         type: string
         required: false
         default: ''
     secrets:
-      GH_ACTIONS_PAT:
+      SUBMODULE_APP_PRIVATE_KEY:
         required: true
       SANDBOX_VM_USERNAME:
         required: true
@@ -37,8 +41,18 @@ env:
 jobs:
   BuildAndDeployToSandboxVM:
     runs-on: [self-hosted, windows-build-vm]
+    permissions:
+      contents: write
 
     steps:
+      - name: Validate submodule App configuration
+        env:
+          SUBMODULE_APP_CLIENT_ID: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SUBMODULE_APP_CLIENT_ID)) {
+            Throw "SUBMODULE_APP_CLIENT_ID must contain the GitHub App Client ID."
+          }
+
       - name: Clean workspace
         run: |
           if (Test-Path -Path "${{ github.workspace }}") {
@@ -110,11 +124,24 @@ jobs:
       ##################
       # Checkout code. #
       ##################
+      - name: Mint read-only submodule token
+        id: submodule_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            SurePassIdDotNetLibs
+            SurePassIdFidoMDS
+          permission-contents: read
+
       - name: Checkout ${{ github.repository }} and submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: 'recursive'
-          token: ${{ secrets.GH_ACTIONS_PAT }}
+          token: ${{ steps.submodule_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 0
 
