@@ -1,39 +1,75 @@
 
-name: Build and deploy to SANDBOXVM
+name: Run sandbox VM Postman tests
 
 on:
   workflow_call:
-    secrets: 
-      GH_ACTIONS_PAT:
+    inputs:
+      SUBMODULE_APP_CLIENT_ID:
+        description: 'GitHub App Client ID used for read-only PostmanFiles checkout.'
+        type: string
+        required: true
+      DEPLOYMENT_ENVIRONMENT:
+        description: 'Manual deployment target: alpha, dev, or sandbox. Tag deployments derive the target from the ref.'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      SUBMODULE_APP_PRIVATE_KEY:
         required: true
       POSTMAN_API_KEY:
         required: true
 
 env:
-  PUBLISH_DIR: '${{ github.workspace }}\publish'
+  SITE_ENV: ''
+  POSTMAN_COLLECTION_ID: ''
+  POSTMAN_ENVIRONMENT_ID: ''
+
+defaults:
+  run:
+    shell: pwsh
 
 jobs:
   RunPostmanTests:
     runs-on: [self-hosted, windows-build-vm]
+    permissions:
+      contents: read
 
     steps:
       - name: Setup postman workflow variables
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
+          SUBMODULE_APP_CLIENT_ID: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
         run: |
-          $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
-          if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
-            Throw "Invalid branch: ${{ github.ref }}"
+          if ([string]::IsNullOrWhiteSpace($env:SUBMODULE_APP_CLIENT_ID)) {
+            Throw "SUBMODULE_APP_CLIENT_ID must contain the GitHub App Client ID."
           }
+          $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            if ($env:GITHUB_REF -notmatch '^refs/tags/deploy2(?<siteEnv>alpha|dev|sandbox)-.*$') {
+              Throw "Invalid deployment tag: $env:GITHUB_REF"
+            }
+            $TagSiteEnv = $Matches.siteEnv
+            if ($SiteEnv -and $SiteEnv -ne $TagSiteEnv) {
+              Throw "Deployment environment '$SiteEnv' conflicts with tag environment '$TagSiteEnv'."
+            }
+            $SiteEnv = $TagSiteEnv
+          }
+          if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
+            Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox; manual branch runs must supply DEPLOYMENT_ENVIRONMENT."
+          }
+          $SiteEnv = $SiteEnv.ToLowerInvariant()
+          echo "SITE_ENV=$SiteEnv" >> "$env:GITHUB_ENV"
 
           switch ("${{ github.repository }}") {
             "SurePassId/SurePassIdLegacyMfaServer" {
               Write-Host "Postman is not configured for: ${{ github.repository }}"
             }
             "SurePassId/SurePassIdApiServer" {
-              echo "POSTMAN_COLLECTION_ID=4401059-378d5a1c-52ae-4f51-b3b1-da7d644de4d8" >> "${{ github.env }}"
+              echo "POSTMAN_COLLECTION_ID=4401059-378d5a1c-52ae-4f51-b3b1-da7d644de4d8" >> "$env:GITHUB_ENV"
 
               switch ($SiteEnv) {
                 "alpha" {
-                  echo "POSTMAN_ENVIRONMENT_ID=4401059-ca7694ba-49fb-4815-b8ca-685f47a8ed3f" >> "${{ github.env }}"
+                  echo "POSTMAN_ENVIRONMENT_ID=4401059-ca7694ba-49fb-4815-b8ca-685f47a8ed3f" >> "$env:GITHUB_ENV"
                 }
                 default {
                   Write-Host "Postman is not configured for: ${{ github.repository }} on $SiteEnv environment"
@@ -48,13 +84,39 @@ jobs:
             }
           }
 
+      - name: Report unconfigured Postman tests
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID == '' }}
+        run: |
+          $message = "Postman tests skipped: no configuration for $env:GITHUB_REPOSITORY in $env:SITE_ENV."
+          Write-Host "::notice::$message"
+          echo $message >> "$env:GITHUB_STEP_SUMMARY"
+
+      - name: Mint read-only PostmanFiles token
+        id: postman_token
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: PostmanFiles
+          permission-contents: read
+
       - name: Checkout postman files
         if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: SurePassId/PostmanFiles
-          token: ${{ secrets.GH_ACTIONS_PAT }}
-  
+          token: ${{ steps.postman_token.outputs.token }}
+          persist-credentials: false
+
+      - name: Validate Postman globals file
+        if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
+        run: |
+          if (-not (Test-Path -LiteralPath 'workspace.postman_globals.json' -PathType Leaf)) {
+            Throw "PostmanFiles checkout did not provide workspace.postman_globals.json."
+          }
+
       - name: Install Postman CLI
         if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
         run: |
@@ -65,7 +127,9 @@ jobs:
 
       - name: Login to Postman CLI
         if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
-        run: postman login --with-api-key ${{ secrets.POSTMAN_API_KEY }}
+        env:
+          POSTMAN_API_KEY: ${{ secrets.POSTMAN_API_KEY }}
+        run: postman login --with-api-key "$env:POSTMAN_API_KEY"
 
       - name: Run API tests
         if: ${{ env.POSTMAN_ENVIRONMENT_ID != '' }}
@@ -75,4 +139,3 @@ jobs:
                   --environment ${{ env.POSTMAN_ENVIRONMENT_ID }} `
                   --globals workspace.postman_globals.json `
                   --verbose
-

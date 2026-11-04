@@ -8,6 +8,11 @@ on:
         description: 'GitHub App Client ID used for read-only recursive submodule checkout.'
         type: string
         required: true
+      DEPLOYMENT_ENVIRONMENT:
+        description: 'Manual deployment target: alpha, dev, or sandbox. Tag deployments derive the target from the ref.'
+        type: string
+        required: false
+        default: ''
       DEPLOY_APP_NAME:
         description: 'The app name to deploy.'
         type: string
@@ -43,6 +48,16 @@ jobs:
     runs-on: [self-hosted, windows-build-vm]
     permissions:
       contents: write
+    concurrency:
+      group: >-
+        sandboxvm-deploy-${{ github.repository }}-${{
+          github.repository == 'SurePassId/IdentityProvider' && inputs.DEPLOY_APP_NAME || 'default'
+        }}-${{
+          (startsWith(github.ref, 'refs/tags/deploy2alpha-') && 'alpha')
+          || (startsWith(github.ref, 'refs/tags/deploy2dev-') && 'dev')
+          || (startsWith(github.ref, 'refs/tags/deploy2sandbox-') && 'sandbox')
+          || inputs.DEPLOYMENT_ENVIRONMENT || 'invalid' }}
+      cancel-in-progress: false
 
     steps:
       - name: Validate submodule App configuration
@@ -60,12 +75,25 @@ jobs:
           }
 
       - name: Setup workflow variables
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
         run: |
-          if ($env:GITHUB_REF -notmatch '^refs/tags/deploy2(?<siteEnv>alpha|dev|sandbox)-.*$') {
-            Throw "Invalid deployment tag: $env:GITHUB_REF"
+          $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            if ($env:GITHUB_REF -notmatch '^refs/tags/deploy2(?<siteEnv>alpha|dev|sandbox)-.*$') {
+              Throw "Invalid deployment tag: $env:GITHUB_REF"
+            }
+            $TagSiteEnv = $Matches.siteEnv
+            if ($SiteEnv -and $SiteEnv -ne $TagSiteEnv) {
+              Throw "Deployment environment '$SiteEnv' conflicts with tag environment '$TagSiteEnv'."
+            }
+            $SiteEnv = $TagSiteEnv
           }
-          $SiteEnv = $Matches.siteEnv
-          echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
+          if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
+            Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox; manual branch runs must supply DEPLOYMENT_ENVIRONMENT."
+          }
+          $SiteEnv = $SiteEnv.ToLowerInvariant()
+          echo "SITE_ENV=$SiteEnv" >> "$env:GITHUB_ENV"
 
           switch ("${{ github.repository }}") {
             "SurePassId/SurePassIdLegacyMfaServer" {
