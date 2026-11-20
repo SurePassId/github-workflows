@@ -32,8 +32,26 @@ jobs:
     runs-on: [self-hosted, windows-build-vm]
 
     steps:
+      # actions/checkout grants the SSH key to "$USERDOMAIN\$USERNAME" via icacls. When the runner
+      # service runs as NETWORK SERVICE or SYSTEM, that resolves to an unmappable "WORKGROUP\HOST$".
+      - name: Resolve runner Windows identity
+        id: runner-identity
+        shell: pwsh
+        run: |
+          $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $identityParts = $identityName.Split('\', 2)
+          if ($identityParts.Count -ne 2) {
+            throw "Unexpected Windows identity format: '$identityName'"
+          }
+          Write-Host "Runner Windows identity: $identityName"
+          "domain=$($identityParts[0])" >> $env:GITHUB_OUTPUT
+          "user=$($identityParts[1])" >> $env:GITHUB_OUTPUT
+
       - name: Checkout repository and submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        env:
+          USERDOMAIN: ${{steps.runner-identity.outputs.domain}}
+          USERNAME: ${{steps.runner-identity.outputs.user}}
         with:
           submodules: recursive
           ssh-key: ${{secrets.SSH_KEY}}
