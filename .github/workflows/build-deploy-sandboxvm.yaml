@@ -18,6 +18,11 @@ on:
         type: string
         required: false
         default: ''
+      HEALTH_CHECK_PATH:
+        description: 'Readiness path. Defaults to the existing API/MFA endpoint; required for other apps.'
+        type: string
+        required: false
+        default: ''
     secrets:
       SUBMODULE_APP_PRIVATE_KEY:
         required: true
@@ -27,6 +32,15 @@ on:
         required: true
       SANDBOX_VM_HOSTNAME:
         required: true
+      SANDBOX_CONFIGURATION_ALPHA:
+        description: 'Optional until activation: API/MFA alpha-only configuration bundle; see the hardening plan.'
+        required: false
+      SANDBOX_CONFIGURATION_DEV:
+        description: 'Optional until activation: API/MFA dev-only configuration bundle; see the hardening plan.'
+        required: false
+      SANDBOX_CONFIGURATION_SANDBOX:
+        description: 'Optional until activation: API/MFA sandbox-only configuration bundle; see the hardening plan.'
+        required: false
 
 env:
   PUBLISH_DIR: '${{ github.workspace }}\publish'
@@ -40,12 +54,18 @@ env:
   APP_SOLUTION: ''
   APP_PROJECT: ''
   APP_ASSEMBLY: ''
+  HEALTH_CHECK_URL: ''
   # Keeps the files/folders in the destination path.
   KEEP_LIST: ''
+
+defaults:
+  run:
+    shell: pwsh
 
 jobs:
   BuildAndDeployToSandboxVM:
     runs-on: [self-hosted, windows-build-vm]
+    timeout-minutes: 45
     permissions:
       contents: write
     concurrency:
@@ -68,15 +88,10 @@ jobs:
             Throw "SUBMODULE_APP_CLIENT_ID must contain the GitHub App Client ID."
           }
 
-      - name: Clean workspace
-        run: |
-          if (Test-Path -Path "${{ github.workspace }}") {
-            Remove-Item -Recurse -Force -Path "${{ github.workspace }}\*"
-          }
-
       - name: Setup workflow variables
         env:
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
+          DEPLOY_APP_NAME: ${{ inputs.DEPLOY_APP_NAME }}
         run: |
           $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
           if ($env:GITHUB_REF -like 'refs/tags/*') {
@@ -95,7 +110,7 @@ jobs:
           $SiteEnv = $SiteEnv.ToLowerInvariant()
           echo "SITE_ENV=$SiteEnv" >> "$env:GITHUB_ENV"
 
-          switch ("${{ github.repository }}") {
+          switch ($env:GITHUB_REPOSITORY) {
             "SurePassId/SurePassIdLegacyMfaServer" {
               echo "DOT_NET_TYPE=framework" >> "${{ github.env }}"
               echo "APP_NAME=mfa" >> "${{ github.env }}"
@@ -123,7 +138,7 @@ jobs:
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
               echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePassIdOidcServer.sln" >> "${{ github.env }}"
-              switch ("${{ inputs.DEPLOY_APP_NAME }}") {
+              switch ($env:DEPLOY_APP_NAME) {
                 "oidc" {
                   echo "CONFIGURATION=Debug" >> "${{ github.env }}"
                   echo "ENV_NAME=Development" >> "${{ github.env }}"
@@ -140,14 +155,31 @@ jobs:
                   echo "APP_ASSEMBLY=SurePassIdOidcClient.dll" >> "${{ github.env }}"
                 }
                 default {
-                  Throw "Invalid app name for SurePassId/IdentityProvider: ${{ inputs.DEPLOY_APP_NAME }}"
+                  Throw "Invalid app name for SurePassId/IdentityProvider: $env:DEPLOY_APP_NAME"
                 }
               }
             }
             default {
-              Throw "Invalid repository: ${{ github.repository }}"
+              Throw "Invalid repository: $env:GITHUB_REPOSITORY"
             }
           }
+
+      - name: Resolve deployment health check
+        env:
+          HEALTH_CHECK_PATH: ${{ inputs.HEALTH_CHECK_PATH }}
+        run: |
+          $HealthCheckPath = $env:HEALTH_CHECK_PATH
+          if ([string]::IsNullOrWhiteSpace($HealthCheckPath)) {
+            switch ($env:APP_NAME) {
+              'api' { $HealthCheckPath = '/status' }
+              'mfa' { $HealthCheckPath = '/server/HealthCheck.aspx' }
+              default { Throw "HEALTH_CHECK_PATH is required for $env:APP_NAME." }
+            }
+          }
+          if ($HealthCheckPath -notmatch '^/[A-Za-z0-9/_.-]+$' -or $HealthCheckPath -match '(^|/)\.\.?(/|$)') {
+            Throw "Invalid health-check path: '$HealthCheckPath'. Supply a readiness path without traversal or query parameters."
+          }
+          echo "HEALTH_CHECK_URL=https://$($env:APP_NAME)-$($env:SITE_ENV).surepassid.com$HealthCheckPath" >> "$env:GITHUB_ENV"
 
       ##################
       # Checkout code. #
@@ -172,6 +204,16 @@ jobs:
           token: ${{ steps.submodule_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Clean publish directory
+        run: |
+          $PublishPath = Join-Path $env:GITHUB_WORKSPACE 'publish'
+          if (Test-Path -LiteralPath $PublishPath) {
+            if ((Get-Item -LiteralPath $PublishPath).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+              Throw "Refusing to clean a redirected publish directory: $PublishPath"
+            }
+            Remove-Item -LiteralPath $PublishPath -Recurse -Force
+          }
 
       ########################
       # .NET Framework steps #
@@ -234,7 +276,7 @@ jobs:
       # Copy envirinment specific files. #
       ####################################
       - name: Copy environment specific files in place.
-        uses: SurePassId/copy-web-env-files@main
+        uses: SurePassId/copy-web-env-files@042023699388269110326b9f1df4abba8cbd2923 # node24
         with:
           deployment-environment: ${{ env.SITE_ENV }}
           path: "${{ env.PUBLISH_DIR }}"
@@ -242,138 +284,373 @@ jobs:
       ##############################
       # Generate Release Tag Name. #
       ##############################
+      - name: Prepare and validate deployment configuration
+        env:
+          DEPLOYMENT_CONFIGURATION: >-
+            ${{ (env.SITE_ENV == 'alpha' && secrets.SANDBOX_CONFIGURATION_ALPHA)
+              || (env.SITE_ENV == 'dev' && secrets.SANDBOX_CONFIGURATION_DEV)
+              || (env.SITE_ENV == 'sandbox' && secrets.SANDBOX_CONFIGURATION_SANDBOX)
+              || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Read-ConfigurationJson {
+            param([string]$Text)
+            try {
+              $jsonOptions = [System.Text.Json.JsonDocumentOptions]::new()
+              $jsonOptions.CommentHandling = [System.Text.Json.JsonCommentHandling]::Skip
+              $jsonOptions.AllowTrailingCommas = $true
+              $document = [System.Text.Json.JsonDocument]::Parse($Text, $jsonOptions)
+              try {
+                function Assert-UniqueProperties {
+                  param($Element)
+                  if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+                    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                    foreach ($property in $Element.EnumerateObject()) {
+                      if (-not $names.Add($property.Name) -or $property.Name.Contains(':')) { throw 'Duplicate or flattened configuration key.' }
+                      Assert-UniqueProperties $property.Value
+                    }
+                  } elseif ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
+                    foreach ($elementItem in $Element.EnumerateArray()) { Assert-UniqueProperties $elementItem }
+                  }
+                }
+                Assert-UniqueProperties $document.RootElement
+                $result = ConvertFrom-Json -InputObject $Text -AsHashtable
+                if ($result -isnot [Collections.IDictionary]) { throw 'Expected an object.' }
+                return $result
+              } finally { $document.Dispose() }
+            } catch {
+              throw 'Configuration JSON must be an object with unique case-insensitive keys; details suppressed to protect secrets.'
+            }
+          }
+          function Read-ConfigurationXml {
+            param([byte[]]$Bytes, [string]$RootName = 'configuration')
+            $settings = [Xml.XmlReaderSettings]::new()
+            $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+            $settings.XmlResolver = $null
+            $stream = [IO.MemoryStream]::new($Bytes, $false)
+            try {
+              $reader = [Xml.XmlReader]::Create($stream, $settings)
+              try {
+                $document = [Xml.XmlDocument]::new()
+                $document.XmlResolver = $null
+                $document.Load($reader)
+                if ($document.DocumentElement.Name -cne $RootName -or
+                    $document.SelectNodes('//@configSource | //appSettings/@file | //@configProtectionProvider').Count) {
+                  throw 'Configuration must be self-contained.'
+                }
+                return ,$document
+              } finally { $reader.Dispose() }
+            } catch {
+              throw 'IIS configuration must be valid, self-contained XML without DTDs or encrypted/external sections; details suppressed to protect secrets.'
+            } finally { $stream.Dispose() }
+          }
+          function Assert-PublishPath {
+            param([string]$Path)
+            $cursor = [IO.Path]::GetFullPath($Path)
+            while ($cursor) {
+              $item = Get-Item -LiteralPath $cursor -Force
+              if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point in publish path.' }
+              $cursor = [IO.Path]::GetDirectoryName($cursor)
+            }
+            foreach ($item in (Get-ChildItem -LiteralPath $Path -Recurse -Force)) {
+              if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point in published content.' }
+            }
+          }
+          Assert-PublishPath $env:PUBLISH_DIR
+          if ([IO.Path]::GetFullPath($env:PUBLISH_DIR).TrimEnd('\') -ine
+              [IO.Path]::Combine($env:GITHUB_WORKSPACE, 'publish').TrimEnd('\')) {
+            throw 'Configuration preparation must use the owned workspace publish directory.'
+          }
+          if ($env:SITE_ENV -cnotin @('alpha', 'dev', 'sandbox')) { throw 'Invalid configuration environment.' }
+          $webConfigPath = Join-Path $env:PUBLISH_DIR 'web.config'
+          if ($env:APP_NAME -in @('api', 'mfa')) {
+            if ($env:KEEP_LIST) { throw 'API/MFA provisioning forbids keep-list retention, including old binaries.' }
+            if ([string]::IsNullOrWhiteSpace($env:DEPLOYMENT_CONFIGURATION)) {
+              throw 'The selected environment requires its SANDBOX_CONFIGURATION secret. No live-file or other-environment fallback is permitted.'
+            }
+            $bundle = Read-ConfigurationJson $env:DEPLOYMENT_CONFIGURATION
+            if ($bundle.Count -ne 3 -or $bundle.application -isnot [string] -or
+                $bundle.application -cne $env:APP_NAME -or $bundle.environment -isnot [string] -or
+                $bundle.environment -cne $env:SITE_ENV -or $bundle.files -isnot [Collections.IDictionary]) {
+              throw 'Configuration bundle must contain only application, environment and files, matching the selected deployment.'
+            }
+            $allowedFiles = @('appsettings.local.json', 'site.lic')
+            $requiredConfiguration = 'appsettings.local.json'
+            $licenseRelativePath = 'site.lic'
+            if ($env:APP_NAME -eq 'mfa') {
+              $allowedFiles = @('web.config', 'bin/site.lic')
+              $requiredConfiguration = 'web.config'
+              $licenseRelativePath = 'bin/site.lic'
+            }
+            $files = @{}
+            foreach ($fileName in $bundle.files.Keys) {
+              if ($fileName -cnotin $allowedFiles -or $bundle.files[$fileName] -isnot [string]) {
+                throw 'Configuration bundle contains an unsupported file or encoding. Application binaries and arbitrary paths are forbidden.'
+              }
+              try { $bytes = [Convert]::FromBase64String($bundle.files[$fileName]) } catch { throw 'Configuration file must be base64 encoded.' }
+              if ($bytes.Length -eq 0) { throw 'Configuration and license files must be nonempty.' }
+              $files[$fileName] = $bytes
+            }
+            if (-not $files.ContainsKey($requiredConfiguration)) { throw 'Required environment-specific configuration is missing from the bundle.' }
+            $sitePath = "E:\iis_sites\$env:SITE_ENV\$env:APP_NAME-$env:SITE_ENV.surepassid.com"
+            if ($env:APP_NAME -eq 'mfa') {
+              $configuration = Read-ConfigurationXml $files['web.config']
+              $appSettings = @{}
+              foreach ($setting in $configuration.SelectNodes('/configuration/appSettings/add')) {
+                if ($appSettings.ContainsKey($setting.GetAttribute('key'))) { throw 'Duplicate MFA appSettings key.' }
+                $appSettings[$setting.GetAttribute('key')] = $setting.GetAttribute('value')
+              }
+              $licenseCode = $appSettings['MfaServerLicence.LicenseCode']
+              $licenseDirectory = $appSettings['MfaServerLicence.FilePath']
+              $licenseName = $appSettings['MfaServerLicence.Filename']
+              $expectedLicenseDirectory = [IO.Path]::Combine($sitePath, 'bin')
+              if (-not [string]::IsNullOrEmpty($licenseCode)) {
+                throw 'MFA requires file licensing for its existing license-management UI; inline licensing is not supported by this deployment policy.'
+              } elseif (($licenseDirectory -or $licenseName) -and
+                  ($licenseDirectory -isnot [string] -or $licenseDirectory.TrimEnd('\') -ine $expectedLicenseDirectory -or $licenseName -cne 'site.lic')) {
+                throw 'File licensing must use the same-site bin\site.lic path or the application defaults.'
+              }
+              $settingsNodes = $configuration.SelectNodes('/configuration/appSettings')
+              if ($settingsNodes.Count -gt 1) { throw 'MFA configuration must have at most one appSettings section.' }
+              $settingsNode = $configuration.SelectSingleNode('/configuration/appSettings')
+              if ($null -eq $settingsNode) {
+                $settingsNode = $configuration.CreateElement('appSettings')
+                $null = $configuration.DocumentElement.AppendChild($settingsNode)
+              }
+              $licenseSettings = @{
+                'MfaServerLicence.LicenseCode' = ''
+                'MfaServerLicence.FilePath' = $expectedLicenseDirectory
+                'MfaServerLicence.Filename' = 'site.lic'
+              }
+              foreach ($settingName in $licenseSettings.Keys) {
+                foreach ($settingNode in @($settingsNode.ChildNodes)) {
+                  if ($settingNode -is [Xml.XmlElement] -and $settingNode.GetAttribute('key') -ieq $settingName) {
+                    $null = $settingsNode.RemoveChild($settingNode)
+                  }
+                }
+                foreach ($operation in @('remove', 'add')) {
+                  $settingNode = $configuration.CreateElement($operation)
+                  $settingNode.SetAttribute('key', $settingName)
+                  if ($operation -eq 'add') { $settingNode.SetAttribute('value', $licenseSettings[$settingName]) }
+                  $null = $settingsNode.AppendChild($settingNode)
+                }
+              }
+              if ($configuration.FirstChild -is [Xml.XmlDeclaration]) { $configuration.FirstChild.Encoding = 'utf-8' }
+              $files['web.config'] = [Text.Encoding]::UTF8.GetBytes($configuration.OuterXml)
+            } else {
+              $configuration = Read-ConfigurationXml ([IO.File]::ReadAllBytes($webConfigPath))
+              $environmentSettings = @($configuration.SelectNodes('//aspNetCore/environmentVariables/environmentVariable') |
+                Where-Object { $_.GetAttribute('name') -in @('ASPNETCORE_ENVIRONMENT', 'DOTNET_ENVIRONMENT') })
+              if (-not $environmentSettings.Count -or @($environmentSettings |
+                  Where-Object { $_.GetAttribute('value') -cne "mfa-$env:SITE_ENV" }).Count) {
+                throw 'Published API IIS environment must match the selected mfa-environment.'
+              }
+              $baseSettings = Read-ConfigurationJson ([IO.File]::ReadAllText((Join-Path $env:PUBLISH_DIR 'appsettings.json')))
+              $environmentConfigPath = Join-Path $env:PUBLISH_DIR "appsettings.mfa-$env:SITE_ENV.json"
+              $environmentSettings = Read-ConfigurationJson ([IO.File]::ReadAllText($environmentConfigPath))
+              $null = Read-ConfigurationXml ([IO.File]::ReadAllBytes((Join-Path $env:PUBLISH_DIR 'logging.config'))) 'log4net'
+              $utf8 = [Text.UTF8Encoding]::new($false, $true)
+              try { $localText = $utf8.GetString($files['appsettings.local.json']) } catch { throw 'API local settings must be valid UTF-8.' }
+              $localSettings = Read-ConfigurationJson $localText
+              if ($localSettings.ConnectionStrings -isnot [Collections.IDictionary] -or
+                  $localSettings.ConnectionStrings.MFA -isnot [string] -or
+                  [string]::IsNullOrWhiteSpace($localSettings.ConnectionStrings.MFA) -or
+                  $localSettings.AppSettings -isnot [Collections.IDictionary] -or
+                  $localSettings.AppSettings.MfaServerLicense -isnot [Collections.IDictionary]) {
+                throw 'API local settings must explicitly supply ConnectionStrings.MFA and AppSettings.MfaServerLicense.'
+              }
+              $license = $localSettings.AppSettings.MfaServerLicense
+              if ($license.ValidationKey -isnot [string] -or [string]::IsNullOrWhiteSpace($license.ValidationKey)) {
+                throw 'API license validation key must be supplied in local settings.'
+              }
+              # Override lower-priority license settings so only the selected bundle determines licensing.
+              $licenseCode = $license.LicenseCode
+              if ($null -ne $licenseCode -and $licenseCode -isnot [string]) { throw 'API license code must be a string.' }
+              if ([string]::IsNullOrWhiteSpace($licenseCode)) { $licenseCode = '' }
+              $licenseDirectory = $sitePath
+              $expectedLicenseDirectory = $sitePath
+              if ($license.Contains('FilePath')) { $licenseDirectory = $license.FilePath }
+              $licenseName = 'site.lic'
+              if ($license.Contains('Filename')) { $licenseName = $license.Filename }
+              if (-not [string]::IsNullOrWhiteSpace($licenseCode)) {
+                if ($files.ContainsKey($licenseRelativePath)) { throw 'Inline licensing must not also supply a license file.' }
+              } elseif ($licenseDirectory -isnot [string] -or
+                  $licenseDirectory.TrimEnd('\') -ine $expectedLicenseDirectory -or
+                  $licenseName -isnot [string] -or $licenseName -cne 'site.lic') {
+                throw 'File licensing must use the same-site site.lic path.'
+              }
+              $license.LicenseCode = [string]$licenseCode
+              $license.FilePath = $sitePath
+              $license.Filename = 'site.lic'
+              $files['appsettings.local.json'] = $utf8.GetBytes(($localSettings | ConvertTo-Json -Depth 100 -Compress -WarningAction Stop))
+              # Windows PowerShell 5.1 validates the same immutable JSON without comment/trailing-comma support.
+              $files['appsettings.json'] = $utf8.GetBytes(($baseSettings | ConvertTo-Json -Depth 100 -Compress -WarningAction Stop))
+              $files["appsettings.mfa-$env:SITE_ENV.json"] = $utf8.GetBytes(($environmentSettings | ConvertTo-Json -Depth 100 -Compress -WarningAction Stop))
+            }
+            if ([string]::IsNullOrWhiteSpace($licenseCode) -and -not $files.ContainsKey($licenseRelativePath)) {
+              throw 'File licensing requires the selected environment license in the bundle.'
+            }
+            foreach ($fileName in $files.Keys) {
+              $destination = Join-Path $env:PUBLISH_DIR $fileName
+              $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+              [IO.File]::WriteAllBytes($destination, $files[$fileName])
+            }
+            if (-not $files.ContainsKey($licenseRelativePath)) {
+              $unusedLicense = Join-Path $env:PUBLISH_DIR $licenseRelativePath
+              if (Test-Path -LiteralPath $unusedLicense) { Remove-Item -LiteralPath $unusedLicense -Force }
+            }
+            if ($env:APP_NAME -eq 'api') {
+              foreach ($settingsFile in (Get-ChildItem -LiteralPath $env:PUBLISH_DIR -Filter 'appsettings.*.json' -File)) {
+                if ($settingsFile.Name -cnotin @('appsettings.local.json', "appsettings.mfa-$env:SITE_ENV.json")) {
+                  Remove-Item -LiteralPath $settingsFile.FullName -Force
+                }
+              }
+            }
+          }
+          if (-not (Test-Path -LiteralPath $webConfigPath -PathType Leaf) -or
+              (Get-Item -LiteralPath $webConfigPath).Length -eq 0) {
+            throw 'Published web.config is missing or empty. Configuration must be provisioned before deployment.'
+          }
+          Write-Host "Validated staged configuration for $env:APP_NAME/$env:SITE_ENV; no live-site files were read."
+
       - name: Generate Release Tag Name
         if: ${{ env.TAG_REPOSITORY == 'true' }}
         run: |
-          $assembly = [System.Reflection.Assembly]::LoadFile("${{ env.PUBLISH_DIR }}\${{ env.APP_ASSEMBLY }}")
-          $version = $assembly.GetName().Version
-          echo "APP_TAG_NAME=${{ env.SITE_ENV }}-$version" >> "${{ github.env }}"
+          $assemblyPath = Join-Path $env:PUBLISH_DIR $env:APP_ASSEMBLY.TrimStart([char]'\')
+          if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+            Throw "Expected published assembly was not found: $assemblyPath"
+          }
+          $version = [System.Reflection.AssemblyName]::GetAssemblyName($assemblyPath).Version
+          echo "APP_TAG_NAME=$($env:SITE_ENV)-$version" >> "$env:GITHUB_ENV"
 
       #######################################
-      # Tag the commit with the release tag #
+      # Check the release tag before deploy #
       #######################################
-      - name: Tag the commit with the release tag
+      - name: Check release tag before deployment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         if: ${{ env.TAG_REPOSITORY == 'true' }}
         with:
           script: |
-            const {APP_TAG_NAME} = process.env
-            github.rest.git.createRef({
+            const tagName = process.env.APP_TAG_NAME;
+            let existing;
+            try {
+              existing = await github.rest.git.getRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: `refs/tags/${APP_TAG_NAME}`,
-                sha: context.sha
-            })
+                ref: `tags/${tagName}`
+              });
+            } catch (err) {
+              if (err.status !== 404) {
+                throw err;
+              }
+              core.info(`Release tag ${tagName} is available.`);
+              return;
+            }
+            let target = existing.data.object;
+            while (target.type === 'tag') {
+              const annotated = await github.rest.git.getTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_sha: target.sha
+              });
+              target = annotated.data.object;
+            }
+            if (target.type !== 'commit' || target.sha !== context.sha) {
+              throw new Error(`Release tag ${tagName} already points to ${target.sha}, not ${context.sha}. Increment the application version before deploying.`);
+            }
+            core.info(`Release tag ${tagName} already identifies this commit.`);
 
       #############################
       # Deploy files to sandboxvm #
       #############################
-      - name: Deploy files to sandboxvm and restart ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com.
+      - name: Deploy and verify ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com
+        uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@d364d76cc30d9014701ad2c9ffc2c583c055e8eb
+        with:
+          computer-name: ${{ secrets.SANDBOX_VM_HOSTNAME }}
+          username: ${{ secrets.SANDBOX_VM_USERNAME }}
+          password: ${{ secrets.SANDBOX_VM_PASSWORD }}
+          site-env: ${{ env.SITE_ENV }}
+          app-name: ${{ env.APP_NAME }}
+          source-path: ${{ env.PUBLISH_DIR }}
+          app-assembly: ${{ env.APP_ASSEMBLY }}
+          run-id: ${{ github.run_id }}-${{ github.run_attempt }}
+          keep-list: ${{ env.KEEP_LIST }}
+          health-check-url: ${{ env.HEALTH_CHECK_URL }}
+
+      - name: Tag the successfully deployed commit
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        if: ${{ env.TAG_REPOSITORY == 'true' }}
+        with:
+          script: |
+            const tagName = process.env.APP_TAG_NAME;
+            try {
+              try {
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/tags/${tagName}`,
+                  sha: context.sha
+                });
+                core.info(`Created ${tagName} for the successfully deployed commit.`);
+                return;
+              } catch (err) {
+                if (err.status !== 422) {
+                  throw err;
+                }
+              }
+              const existing = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tagName}`
+              });
+              let target = existing.data.object;
+              while (target.type === 'tag') {
+                const annotated = await github.rest.git.getTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_sha: target.sha
+                });
+                target = annotated.data.object;
+              }
+              if (target.type !== 'commit' || target.sha !== context.sha) {
+                throw new Error(`Release tag ${tagName} conflicts with ${target.sha}.`);
+              }
+              core.info(`Release tag ${tagName} already identifies the successfully deployed commit.`);
+            } catch (err) {
+              throw new Error(`Deployment succeeded, but release tagging failed: ${err.message}`, { cause: err });
+            }
+
+      - name: Remove provisioned configuration from runner
+        if: ${{ always() && (env.APP_NAME == 'api' || env.APP_NAME == 'mfa') }}
         run: |
-          $App = "${{ env.APP_NAME }}"
-          $SiteEnv = "${{ env.SITE_ENV }}"
-          $SiteDomainName = "$App-$SiteEnv.surepassid.com"
-          $SourcePath = "${{ env.PUBLISH_DIR }}\*"
-          $DestinationPath = "E:\iis_sites\$SiteEnv\$SiteDomainName"
-
-          $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
-          $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
-          $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
-
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-          $session = New-PSSession -ComputerName $azure_vm -Credential $credential
-
-          Write-Host "================================================================================"
-          Write-Host "Compress the source files"
-          Write-Host "================================================================================"
-          $zipFilePath = "${env:TEMP}\deploy-$SiteDomainName.7z"
-          ###Compress-Archive -Path $SourcePath -DestinationPath $zipFilePath -Force
-          if (Test-Path -Path $zipFilePath) {
-              Remove-Item -Path $zipFilePath -Force
+          $ErrorActionPreference = 'Stop'
+          $publishPath = [IO.Path]::GetFullPath($env:PUBLISH_DIR).TrimEnd('\')
+          if ($publishPath -ine [IO.Path]::Combine($env:GITHUB_WORKSPACE, 'publish').TrimEnd('\')) {
+            throw 'Refusing configuration cleanup outside the owned publish directory.'
           }
-          &'C:\Program Files\7-Zip\7z.exe' a -t7z $zipFilePath $SourcePath
-
-          Write-Host "================================================================================"
-          Write-Host "Stopping $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd stop site $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd stop apppool $SiteDomainName
-          } -ArgumentList $SiteDomainName
-
-          Write-Host "================================================================================"
-          Write-Host "Backup $SiteDomainName folder on the remote machine to a zip file."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              Start-Sleep -Seconds 3
-              $currentDateTime = Get-Date
-              $formattedDateTime = $currentDateTime.ToString("yyyy-MM-dd_HHmmss")
-              &'C:\Program Files\7-Zip\7z.exe' a -t7z "${DestinationPath}_$formattedDateTime.7z" "${DestinationPath}" -xr!Trace
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Keep only the last 3 Backups for $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              # Get all files matching the pattern ${DestinationPath}_*.7z
-              $files = Get-ChildItem -Path "${DestinationPath}_*.7z" | Sort-Object LastWriteTime -Descending
-              # Skip the first 3 files and delete the rest.
-              $files | Select-Object -Skip 3 | ForEach-Object {
-                  Remove-Item -Path $_.FullName -Force
+          if (Test-Path -LiteralPath $publishPath) {
+            $cursor = $publishPath
+            while ($cursor) {
+              if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'Reparse point in configuration cleanup path.'
               }
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          $KeepList = "${{ env.KEEP_LIST }}"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $KeepList)
-              Start-Sleep -Seconds 3
-
-              # Split the KeepList string into an array of files/folders to exclude from deletion.
-              if ([string]::IsNullOrEmpty($KeepList)) {
-                  $exclusions = @()
-              } else {
-                  $exclusions = $KeepList -split ','
+              $cursor = [IO.Path]::GetDirectoryName($cursor)
+            }
+            $configurationFiles = @('appsettings.local.json', 'site.lic')
+            if ($env:APP_NAME -eq 'mfa') { $configurationFiles = @('web.config', 'bin\site.lic') }
+            foreach ($relativePath in $configurationFiles) {
+              $filePath = Join-Path $publishPath $relativePath
+              $parentPath = [IO.Path]::GetDirectoryName($filePath)
+              if ((Test-Path -LiteralPath $parentPath) -and
+                  ((Get-Item -LiteralPath $parentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'Reparse point in configuration cleanup parent.'
               }
-
-              Get-ChildItem -Path $DestinationPath | ForEach-Object {
-                  if ($exclusions -notcontains $_.Name) {
-                      Remove-Item -Recurse -Force -Path $_.FullName
-                  }
+              if (Test-Path -LiteralPath $filePath) {
+                $item = Get-Item -LiteralPath $filePath -Force
+                if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                  throw 'Configuration cleanup target must be an ordinary file.'
+                }
+                Remove-Item -LiteralPath $filePath -Force
               }
-          } -ArgumentList $DestinationPath, $KeepList
-
-          Write-Host "================================================================================"
-          Write-Host "Deploying to $DestinationPath on $SiteDomainName"
-          Write-Host "================================================================================"
-          Copy-Item -Path $zipFilePath `
-                    -Destination $DestinationPath\deploy-$SiteDomainName.7z `
-                    -ToSession $session `
-                    -Recurse `
-                    -Force
-
-          Write-Host "================================================================================"
-          Write-Host "Extract the compressed file on the remote machine"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $SiteDomainName)
-              &'C:\Program Files\7-Zip\7z.exe' x "${DestinationPath}\deploy-$SiteDomainName.7z" -o"${DestinationPath}" -y
-              Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
-          } -ArgumentList $DestinationPath, $SiteDomainName
-
-          Write-Host "================================================================================"
-          Write-Host "Starting $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd start apppool $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd start site $SiteDomainName
-          } -ArgumentList $SiteDomainName
-
-          Remove-PSSession $session
+            }
+          }
