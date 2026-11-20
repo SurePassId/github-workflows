@@ -1,0 +1,9 @@
+@{
+    GUID = '172eeab2-cd6d-4131-89f9-cbb1568d372d'
+    ModulesToImport = @('C:\Program Files\WindowsPowerShell\Modules\SandboxDeployment\2.0.0\SandboxDeployment.psd1')
+    VisibleFunctions = @('New-SandboxUpload', 'Add-SandboxUploadChunk',
+        'Complete-SandboxDeployment', 'Remove-SandboxUpload')
+    VisibleCmdlets = @()
+    VisibleExternalCommands = @()
+    VisibleAliases = @()
+}
