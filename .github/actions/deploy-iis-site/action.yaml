@@ -1,5 +1,5 @@
 name: Deploy IIS site
-description: Stage, preserve, swap and verify a Windows IIS release with rollback.
+description: Restricted sandbox ZIP transport; live deployment blocked pending server safety qualification.
 inputs:
   computer-name:
     description: WinRM computer name
@@ -26,16 +26,20 @@ inputs:
     description: Numeric GitHub run ID followed by hyphen and numeric attempt
     required: true
   keep-list:
-    description: Comma-separated direct child names copied from the stopped release
+    description: Must be empty for API/MFA (secure provisioning); other apps validate intent only during upload-only validation
     required: false
     default: ''
   health-check-url:
-    description: Required HTTPS URL on app-env.surepassid.com returning exact HTTP 200
+    description: Required HTTPS health URL on app-env.surepassid.com; validated but not probed in upload-only mode
     required: true
+  upload-only:
+    description: Explicitly validate upload and cleanup without deploying; false fails until server safety is qualified
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
-    - name: Deploy and verify IIS release
+    - name: Validate restricted sandbox upload (no deployment)
       shell: pwsh
       env:
         DEPLOY_ACTION_PATH: ${{ github.action_path }}
@@ -49,5 +53,6 @@ runs:
         DEPLOY_RUN_ID: ${{ inputs.run-id }}
         DEPLOY_KEEP_LIST: ${{ inputs.keep-list }}
         DEPLOY_HEALTH_CHECK_URL: ${{ inputs.health-check-url }}
+        DEPLOY_UPLOAD_ONLY: ${{ inputs.upload-only }}
       run: |
         & (Join-Path $env:DEPLOY_ACTION_PATH 'Deploy-IisSite.ps1')
