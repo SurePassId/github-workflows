@@ -1,0 +1,124 @@
+name: Build modern .NET Web Apps
+
+on:
+  workflow_call:
+    inputs:
+      APP:
+        required: true
+        type: string
+      SLOT:
+        required: true
+        type: string
+      DEPLOY_ENV:
+        required: true
+        type: string
+      BUILD_CONFIG:
+        required: true
+        type: string
+      BUILD_PROJECT:
+        required: true
+        type: string
+      DOTNET_VERSION:
+        description: Stable SDK channel in N.0.x format, with major version 10 or later.
+        required: true
+        type: string
+    secrets:
+      SSH_KEY:
+        required: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Validate SDK channel
+        shell: pwsh
+        env:
+          DOTNET_VERSION: ${{ inputs.DOTNET_VERSION }}
+        run: |
+          if ($env:DOTNET_VERSION -cnotmatch '\A([1-9][0-9]+)\.0\.x\z') {
+            throw "DOTNET_VERSION must be a stable SDK channel in N.0.x format with major version 10 or later. Received '$env:DOTNET_VERSION'."
+          }
+
+      - name: Checkout repo and submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          ssh-key: ${{ secrets.SSH_KEY }}
+
+      - name: Initialize publish directory
+        id: publish-directory
+        shell: pwsh
+        run: |
+          $publishPath = Join-Path $env:RUNNER_TEMP "publish-${{github.run_id}}-${{github.run_attempt}}-${{github.job}}-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $publishPath -ErrorAction Stop | Out-Null
+          "path=$publishPath" >> $env:GITHUB_OUTPUT
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ inputs.DOTNET_VERSION }}
+
+      - name: Verify selected SDK
+        shell: pwsh
+        env:
+          DOTNET_VERSION: ${{ inputs.DOTNET_VERSION }}
+        run: |
+          Write-Host "Requested SDK channel: $env:DOTNET_VERSION"
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet --info failed with exit code $LASTEXITCODE."
+          }
+          $resolvedVersion = dotnet --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "SDK resolution failed with exit code $LASTEXITCODE. Check the caller's global.json."
+          }
+          $resolvedVersion = ($resolvedVersion | Out-String).Trim()
+          Write-Host "Selected SDK version: $resolvedVersion"
+          $requestedMajor = $env:DOTNET_VERSION.Split('.')[0]
+          if ($resolvedVersion -cnotmatch '\A([0-9]+)\.0\.[0-9]+\z' -or $Matches[1] -ne $requestedMajor) {
+            throw "Expected a stable SDK from channel '$env:DOTNET_VERSION', but resolved '$resolvedVersion'. Check installed SDKs and the caller's global.json."
+          }
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        env:
+          BUILD_PROJECT: ${{ inputs.BUILD_PROJECT }}
+        run: dotnet restore "$env:BUILD_PROJECT" --source https://api.nuget.org/v3/index.json
+
+      - name: Publish the project
+        shell: pwsh
+        env:
+          BUILD_PROJECT: ${{ inputs.BUILD_PROJECT }}
+          BUILD_CONFIG: ${{ inputs.BUILD_CONFIG }}
+          PUBLISH_PATH: ${{ steps.publish-directory.outputs.path }}
+        run: dotnet publish "$env:BUILD_PROJECT" --configuration "$env:BUILD_CONFIG" --no-restore --output "$env:PUBLISH_PATH"
+
+      - name: Prepare configuration destination
+        shell: pwsh
+        env:
+          PUBLISH_PATH: ${{ steps.publish-directory.outputs.path }}
+        run: New-Item -ItemType Directory -Path (Join-Path $env:PUBLISH_PATH 'bin') -Force -ErrorAction Stop | Out-Null
+
+      - name: Copy environment specific files in place
+        uses: SurePassId/copy-web-env-files@042023699388269110326b9f1df4abba8cbd2923 # Node 24 revision
+        with:
+          deployment-environment: ${{ inputs.DEPLOY_ENV }}
+          path: ${{ steps.publish-directory.outputs.path }}
+
+      - name: Upload build artifact app-${{ inputs.APP }}-${{ inputs.SLOT }} for deployment jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-${{ inputs.APP }}-${{ inputs.SLOT }}
+          path: ${{ steps.publish-directory.outputs.path }}
+          if-no-files-found: error
+
+      - name: Clean publish directory
+        if: ${{ always() && steps.publish-directory.outputs.path != '' }}
+        shell: pwsh
+        env:
+          PUBLISH_PATH: ${{ steps.publish-directory.outputs.path }}
+        run: |
+          if (Test-Path -LiteralPath $env:PUBLISH_PATH) {
+            Remove-Item -LiteralPath $env:PUBLISH_PATH -Recurse -Force -ErrorAction Stop
+          }

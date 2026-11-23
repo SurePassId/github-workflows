@@ -30,13 +30,21 @@ jobs:
 
     steps:
       - name: Checkout repo and submodules
-        uses: actions/checkout@v3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           ssh-key: ${{ secrets.SSH_KEY }}
 
+      - name: Initialize publish directory
+        id: publish-directory
+        shell: pwsh
+        run: |
+          $publishPath = Join-Path $env:RUNNER_TEMP "publish-${{github.run_id}}-${{github.run_attempt}}-${{github.job}}-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $publishPath -ErrorAction Stop | Out-Null
+          "path=$publishPath" >> $env:GITHUB_OUTPUT
+
       - name: Set up .NET Core
-        uses: actions/setup-dotnet@v2
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '8.0.x'
           #include-prerelease: true
@@ -45,17 +53,37 @@ jobs:
         run: dotnet restore --source https://api.nuget.org/v3/index.json
 
       - name: Publish the project.
-        run: dotnet publish ${{inputs.BUILD_PROJECT}} -c ${{inputs.BUILD_CONFIG}} -o ${{env.DOTNET_ROOT}}/myapp
+        shell: pwsh
+        env:
+          PUBLISH_PATH: ${{steps.publish-directory.outputs.path}}
+        run: dotnet publish ${{inputs.BUILD_PROJECT}} -c ${{inputs.BUILD_CONFIG}} -o "$env:PUBLISH_PATH"
+
+      - name: Prepare configuration destination
+        shell: pwsh
+        env:
+          PUBLISH_PATH: ${{steps.publish-directory.outputs.path}}
+        run: New-Item -ItemType Directory -Path (Join-Path $env:PUBLISH_PATH 'bin') -Force -ErrorAction Stop | Out-Null
 
       - name: Copy environment specific files in place.
-        uses: SurePassId/copy-web-env-files@main
+        uses: SurePassId/copy-web-env-files@042023699388269110326b9f1df4abba8cbd2923 # Node 24 revision
         with:
           deployment-environment: ${{inputs.DEPLOY_ENV}}
-          path: ${{env.DOTNET_ROOT}}/myapp
+          path: ${{steps.publish-directory.outputs.path}}
 
       - name: Upload build artifact app-${{inputs.APP}}-${{inputs.SLOT}} for deployment jobs.
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
-          path: ${{env.DOTNET_ROOT}}/myapp
+          path: ${{steps.publish-directory.outputs.path}}
+          if-no-files-found: error
+
+      - name: Clean publish directory
+        if: ${{always() && steps.publish-directory.outputs.path != ''}}
+        shell: pwsh
+        env:
+          PUBLISH_PATH: ${{steps.publish-directory.outputs.path}}
+        run: |
+          if (Test-Path -LiteralPath $env:PUBLISH_PATH) {
+            Remove-Item -LiteralPath $env:PUBLISH_PATH -Recurse -Force -ErrorAction Stop
+          }
 

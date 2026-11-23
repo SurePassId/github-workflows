@@ -29,20 +29,38 @@ jobs:
     environment:
       name: app-${{inputs.APP}}-${{inputs.DEPLOY_ENV}}-${{inputs.REGION}}/${{inputs.SLOT}}
       url: ${{steps.deploy-to-webapp.outputs.webapp-url}}
-      
+
     steps:
+      - name: Initialize download directory
+        id: download-directory
+        shell: pwsh
+        run: |
+          $downloadPath = Join-Path $env:RUNNER_TEMP "download-${{github.run_id}}-${{github.run_attempt}}-${{github.job}}-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $downloadPath -ErrorAction Stop | Out-Null
+          "path=$downloadPath" >> $env:GITHUB_OUTPUT
+
       - name: Download artifact app-${{inputs.APP}}-${{inputs.SLOT}} from the build job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: app-${{inputs.APP}}-${{inputs.SLOT}}
-          path: ./deplotment-package
+          path: ${{steps.download-directory.outputs.path}}
 
       - name: Deploy to Azure App Service app-${{inputs.APP}}-${{inputs.DEPLOY_ENV}}-${{inputs.REGION}}/${{inputs.SLOT}}
         id: deploy-to-webapp
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@02a81bead70021f5284939794bcec79c271ab383 # v3.0.8
         with:
           app-name: app-${{inputs.APP}}-${{inputs.DEPLOY_ENV}}-${{inputs.REGION}}
           slot-name: ${{inputs.SLOT}}
           publish-profile: ${{secrets.PUBLISH_PROFILE}}
-          package: ./deplotment-package
-          
+          package: ${{steps.download-directory.outputs.path}}
+
+      - name: Clean download directory
+        if: ${{always() && steps.download-directory.outputs.path != ''}}
+        shell: pwsh
+        env:
+          DOWNLOAD_PATH: ${{steps.download-directory.outputs.path}}
+        run: |
+          if (Test-Path -LiteralPath $env:DOWNLOAD_PATH) {
+            Remove-Item -LiteralPath $env:DOWNLOAD_PATH -Recurse -Force -ErrorAction Stop
+          }
+
