@@ -1,25 +1,21 @@
 
-name: Build and deploy to SANDBOXVM
+name: Build and deploy to Sandbox Sites
 
 on:
   workflow_call:
     inputs:
-      SUBMODULE_APP_CLIENT_ID:
-        description: 'GitHub App Client ID used for read-only recursive submodule checkout.'
-        type: string
-        required: true
-      DEPLOYMENT_ENVIRONMENT:
-        description: 'Manual deployment target: alpha, dev, or sandbox. Tag deployments derive the target from the ref.'
-        type: string
-        required: false
-        default: ''
       DEPLOY_APP_NAME:
         description: 'The app name to deploy.'
         type: string
         required: false
         default: ''
-    secrets:
-      SUBMODULE_APP_PRIVATE_KEY:
+      RUNNER_LABEL:
+        description: 'Runner label; retain validation selection until cutover is approved.'
+        type: string
+        required: false
+        default: 'windows-build-vm-validation'
+    secrets: 
+      GH_ACTIONS_PAT:
         required: true
       SANDBOX_VM_USERNAME:
         required: true
@@ -45,29 +41,15 @@ env:
 
 jobs:
   BuildAndDeployToSandboxVM:
-    runs-on: [self-hosted, windows-build-vm]
-    permissions:
-      contents: write
+    runs-on: [self-hosted, Windows, '${{ inputs.RUNNER_LABEL }}']
+    defaults:
+      run:
+        shell: pwsh
     concurrency:
-      group: >-
-        sandboxvm-deploy-${{ github.repository }}-${{
-          github.repository == 'SurePassId/IdentityProvider' && inputs.DEPLOY_APP_NAME || 'default'
-        }}-${{
-          (startsWith(github.ref, 'refs/tags/deploy2alpha-') && 'alpha')
-          || (startsWith(github.ref, 'refs/tags/deploy2dev-') && 'dev')
-          || (startsWith(github.ref, 'refs/tags/deploy2sandbox-') && 'sandbox')
-          || inputs.DEPLOYMENT_ENVIRONMENT || 'invalid' }}
+      group: sandbox-app-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.DEPLOY_APP_NAME }}
       cancel-in-progress: false
 
     steps:
-      - name: Validate submodule App configuration
-        env:
-          SUBMODULE_APP_CLIENT_ID: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:SUBMODULE_APP_CLIENT_ID)) {
-            Throw "SUBMODULE_APP_CLIENT_ID must contain the GitHub App Client ID."
-          }
-
       - name: Clean workspace
         run: |
           if (Test-Path -Path "${{ github.workspace }}") {
@@ -75,25 +57,12 @@ jobs:
           }
 
       - name: Setup workflow variables
-        env:
-          DEPLOYMENT_ENVIRONMENT: ${{ inputs.DEPLOYMENT_ENVIRONMENT }}
         run: |
-          $SiteEnv = $env:DEPLOYMENT_ENVIRONMENT
-          if ($env:GITHUB_REF -like 'refs/tags/*') {
-            if ($env:GITHUB_REF -notmatch '^refs/tags/deploy2(?<siteEnv>alpha|dev|sandbox)-.*$') {
-              Throw "Invalid deployment tag: $env:GITHUB_REF"
-            }
-            $TagSiteEnv = $Matches.siteEnv
-            if ($SiteEnv -and $SiteEnv -ne $TagSiteEnv) {
-              Throw "Deployment environment '$SiteEnv' conflicts with tag environment '$TagSiteEnv'."
-            }
-            $SiteEnv = $TagSiteEnv
+          $SiteEnv = ("${{ github.ref }}" -split "/")[-1]
+          if ("alpha", "dev", "sandbox" -notcontains "$SiteEnv") {
+            Throw "Invalid branch: ${{ github.ref }}"
           }
-          if ("alpha", "dev", "sandbox" -notcontains $SiteEnv) {
-            Throw "Invalid deployment environment: '$SiteEnv'. Expected alpha, dev, or sandbox; manual branch runs must supply DEPLOYMENT_ENVIRONMENT."
-          }
-          $SiteEnv = $SiteEnv.ToLowerInvariant()
-          echo "SITE_ENV=$SiteEnv" >> "$env:GITHUB_ENV"
+          echo "SITE_ENV=$SiteEnv" >> "${{ github.env }}"
 
           switch ("${{ github.repository }}") {
             "SurePassId/SurePassIdLegacyMfaServer" {
@@ -106,7 +75,16 @@ jobs:
             "SurePassId/SurePassIdApiServer" {
               echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
               echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
-              echo "DOTNET_VERSION=10.0.x" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
+              echo "APP_NAME=api" >> "${{ github.env }}"
+              echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
+              echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
+              echo "APP_ASSEMBLY=SurePassIdApiServer.dll" >> "${{ github.env }}"
+            }
+            "SurePassId/SurePassIdMfaServer" {
+              echo "ENV_NAME=mfa-$SiteEnv" >> "${{ github.env }}"
+              echo "DOT_NET_TYPE=core" >> "${{ github.env }}"
+              echo "DOTNET_VERSION=8.0.x" >> "${{ github.env }}"
               echo "APP_NAME=api" >> "${{ github.env }}"
               echo "APP_SOLUTION=.\SurePassIdApiServer.sln" >> "${{ github.env }}"
               echo "APP_PROJECT=.\SurePassIdApiServer\SurePassIdApiServer.csproj" >> "${{ github.env }}"
@@ -152,24 +130,11 @@ jobs:
       ##################
       # Checkout code. #
       ##################
-      - name: Mint read-only submodule token
-        id: submodule_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ inputs.SUBMODULE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.SUBMODULE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            SurePassIdDotNetLibs
-            SurePassIdFidoMDS
-          permission-contents: read
-
       - name: Checkout ${{ github.repository }} and submodules
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          token: ${{ steps.submodule_token.outputs.token }}
+          token: ${{ secrets.GH_ACTIONS_PAT }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -178,7 +143,7 @@ jobs:
       ########################
       - name: Setup MSBuild path
         if: ${{ env.DOT_NET_TYPE == 'framework' }}
-        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+        uses: microsoft/setup-msbuild@v2
 
       - name: Restore the solution's NuGet packages.
         if: ${{ env.DOT_NET_TYPE == 'framework' }}
@@ -207,9 +172,7 @@ jobs:
       ###################
       - name: Setup .NET ${{ env.DOTNET_VERSION }}
         if: ${{ env.DOT_NET_TYPE == 'core' }}
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        env:
-          DOTNET_INSTALL_DIR: '${{ runner.temp }}\dotnet'
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -253,11 +216,11 @@ jobs:
       # Tag the commit with the release tag #
       #######################################
       - name: Tag the commit with the release tag
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v7
         if: ${{ env.TAG_REPOSITORY == 'true' }}
         with:
           script: |
-            const {APP_TAG_NAME} = process.env
+            const {APP_TAG_NAME} = process.env          
             github.rest.git.createRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -265,115 +228,61 @@ jobs:
                 sha: context.sha
             })
 
-      #############################
-      # Deploy files to sandboxvm #
-      #############################
-      - name: Deploy files to sandboxvm and restart ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com.
+      # Deploy through the restricted endpoint, not the default remoting endpoint.
+      - name: Deploy ${{ env.APP_NAME }}-${{ env.SITE_ENV }} through the Sandbox endpoint
+        env:
+          SANDBOX_DEPLOY_USERNAME: ${{ secrets.SANDBOX_VM_USERNAME }}
+          SANDBOX_DEPLOY_PASSWORD: ${{ secrets.SANDBOX_VM_PASSWORD }}
+          SANDBOX_DEPLOY_HOSTNAME: ${{ secrets.SANDBOX_VM_HOSTNAME }}
         run: |
-          $App = "${{ env.APP_NAME }}"
-          $SiteEnv = "${{ env.SITE_ENV }}"
-          $SiteDomainName = "$App-$SiteEnv.surepassid.com"
-          $SourcePath = "${{ env.PUBLISH_DIR }}\*"
-          $DestinationPath = "E:\iis_sites\$SiteEnv\$SiteDomainName"
-
-          $username = "${{ secrets.SANDBOX_VM_USERNAME }}"
-          $password = "${{ secrets.SANDBOX_VM_PASSWORD }}"
-          $azure_vm = "${{ secrets.SANDBOX_VM_HOSTNAME }}"
-
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-          $session = New-PSSession -ComputerName $azure_vm -Credential $credential
-
-          Write-Host "================================================================================"
-          Write-Host "Compress the source files"
-          Write-Host "================================================================================"
-          $zipFilePath = "${env:TEMP}\deploy-$SiteDomainName.7z"
-          ###Compress-Archive -Path $SourcePath -DestinationPath $zipFilePath -Force
-          if (Test-Path -Path $zipFilePath) {
-              Remove-Item -Path $zipFilePath -Force
+          $ErrorActionPreference = 'Stop'
+          if ($env:SANDBOX_DEPLOY_HOSTNAME -ine 'SANDBOX-APP' -or
+            $env:SANDBOX_DEPLOY_USERNAME -ine 'SANDBOX-APP\github-deploy') {
+            throw 'Deployment secrets must select SANDBOX-APP and its dedicated github-deploy account.'
           }
-          &'C:\Program Files\7-Zip\7z.exe' a -t7z $zipFilePath $SourcePath
-
-          Write-Host "================================================================================"
-          Write-Host "Stopping $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd stop site $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd stop apppool $SiteDomainName
-          } -ArgumentList $SiteDomainName
-
-          Write-Host "================================================================================"
-          Write-Host "Backup $SiteDomainName folder on the remote machine to a zip file."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              Start-Sleep -Seconds 3
-              $currentDateTime = Get-Date
-              $formattedDateTime = $currentDateTime.ToString("yyyy-MM-dd_HHmmss")
-              &'C:\Program Files\7-Zip\7z.exe' a -t7z "${DestinationPath}_$formattedDateTime.7z" "${DestinationPath}" -xr!Trace
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Keep only the last 3 Backups for $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath)
-              # Get all files matching the pattern ${DestinationPath}_*.7z
-              $files = Get-ChildItem -Path "${DestinationPath}_*.7z" | Sort-Object LastWriteTime -Descending
-              # Skip the first 3 files and delete the rest.
-              $files | Select-Object -Skip 3 | ForEach-Object {
-                  Remove-Item -Path $_.FullName -Force
-              }
-          } -ArgumentList $DestinationPath
-
-          Write-Host "================================================================================"
-          Write-Host "Deleting the files in $DestinationPath on $SiteDomainName on the remote machine."
-          Write-Host "================================================================================"
-          $KeepList = "${{ env.KEEP_LIST }}"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $KeepList)
-              Start-Sleep -Seconds 3
-
-              # Split the KeepList string into an array of files/folders to exclude from deletion.
-              if ([string]::IsNullOrEmpty($KeepList)) {
-                  $exclusions = @()
-              } else {
-                  $exclusions = $KeepList -split ','
-              }
-
-              Get-ChildItem -Path $DestinationPath | ForEach-Object {
-                  if ($exclusions -notcontains $_.Name) {
-                      Remove-Item -Recurse -Force -Path $_.FullName
-                  }
-              }
-          } -ArgumentList $DestinationPath, $KeepList
-
-          Write-Host "================================================================================"
-          Write-Host "Deploying to $DestinationPath on $SiteDomainName"
-          Write-Host "================================================================================"
-          Copy-Item -Path $zipFilePath `
-                    -Destination $DestinationPath\deploy-$SiteDomainName.7z `
-                    -ToSession $session `
-                    -Recurse `
-                    -Force
-
-          Write-Host "================================================================================"
-          Write-Host "Extract the compressed file on the remote machine"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($DestinationPath, $SiteDomainName)
-              &'C:\Program Files\7-Zip\7z.exe' x "${DestinationPath}\deploy-$SiteDomainName.7z" -o"${DestinationPath}" -y
-              Remove-Item -Path "${DestinationPath}\deploy-$SiteDomainName.7z" -Force
-          } -ArgumentList $DestinationPath, $SiteDomainName
-
-          Write-Host "================================================================================"
-          Write-Host "Starting $SiteDomainName"
-          Write-Host "================================================================================"
-          Invoke-Command -Session $session -ScriptBlock {
-              param ($SiteDomainName)
-              C:\Windows\System32\inetsrv\appcmd start apppool $SiteDomainName
-              C:\Windows\System32\inetsrv\appcmd start site $SiteDomainName
-          } -ArgumentList $SiteDomainName
-
-          Remove-PSSession $session
+          if ([string]::IsNullOrWhiteSpace($env:SANDBOX_DEPLOY_PASSWORD)) {
+            throw 'Sandbox deployment password is missing.'
+          }
+          $siteName = "$env:APP_NAME-$env:SITE_ENV.surepassid.com"
+          $packagePath = Join-Path $env:TEMP ("sandbox-deploy-" + [guid]::NewGuid().ToString('N') + '.zip')
+          $session = $null
+          $proxyModule = $null
+          $uploadId = $null
+          $stream = $null
+          try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::CreateFromDirectory($env:PUBLISH_DIR, $packagePath, 'Optimal', $false)
+            $hash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
+            $securePassword = ConvertTo-SecureString $env:SANDBOX_DEPLOY_PASSWORD -AsPlainText -Force
+            $credential = [System.Management.Automation.PSCredential]::new($env:SANDBOX_DEPLOY_USERNAME, $securePassword)
+            Remove-Item Env:\SANDBOX_DEPLOY_PASSWORD
+            $session = New-PSSession -ComputerName $env:SANDBOX_DEPLOY_HOSTNAME `
+              -ConfigurationName 'SurePassID.SandboxDeploy' -Authentication Negotiate -Credential $credential
+            $commands = 'New-SandboxUpload', 'Add-SandboxUploadChunk', 'Complete-SandboxDeployment', 'Remove-SandboxUpload'
+            $proxyModule = Import-PSSession -Session $session -CommandName $commands -Prefix Remote -DisableNameChecking
+            $uploadId = New-RemoteSandboxUpload -SiteName $siteName
+            $stream = [System.IO.File]::OpenRead($packagePath)
+            if ($stream.Length -gt 4GB) { throw 'Package exceeds the endpoint upload limit of 4 GiB.' }
+            $buffer = [byte[]]::new(192KB)
+            $offset = 0L
+            while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+              $base64 = [Convert]::ToBase64String($buffer, 0, $count)
+              $received = Add-RemoteSandboxUploadChunk -UploadId $uploadId -Offset $offset -Base64 $base64
+              $offset += $count
+              if ([long]$received -ne $offset) { throw 'Endpoint upload acknowledgement mismatch.' }
+            }
+            $stream.Dispose()
+            $stream = $null
+            $result = Complete-RemoteSandboxDeployment -UploadId $uploadId -Sha256 $hash
+            $result | Select-Object SiteName, Destination, Backup, State | Format-List
+          } finally {
+            if ($stream) { $stream.Dispose() }
+            if ($uploadId -and $session -and $session.State -eq 'Opened' -and $proxyModule) {
+              try { Remove-RemoteSandboxUpload -UploadId $uploadId }
+              catch { Write-Warning "Remote staging cleanup failed for upload ${uploadId}: $_" }
+            }
+            if ($proxyModule) { Remove-Module $proxyModule }
+            if ($session) { Remove-PSSession $session }
+            if (Test-Path -LiteralPath $packagePath) { Remove-Item -LiteralPath $packagePath -Force }
+            Remove-Item Env:\SANDBOX_DEPLOY_PASSWORD -ErrorAction SilentlyContinue
+          }
