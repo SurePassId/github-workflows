@@ -564,7 +564,7 @@ jobs:
       # Deploy files to sandboxvm #
       #############################
       - name: Deploy and verify ${{ env.APP_NAME }}-${{ env.SITE_ENV }}.surepassid.com
-        uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@d364d76cc30d9014701ad2c9ffc2c583c055e8eb
+        uses: SurePassId/github-workflows/.github/actions/deploy-iis-site@bcc236e8e6f970353716873a063bec801eaa1ded
         with:
           computer-name: ${{ secrets.SANDBOX_VM_HOSTNAME }}
           username: ${{ secrets.SANDBOX_VM_USERNAME }}

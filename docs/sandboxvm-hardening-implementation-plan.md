@@ -1367,10 +1367,36 @@ completion failures remain mocked or isolated-site tests under Step 3.
    This qualifies v2 JEA discovery, constrained initialization, authenticated
    owner binding, Int64 chunk acknowledgements and owner removal through a real
    restricted session. The two earlier failed attempts stopped during session
-   initialization, before any upload was created. Still pending: the same
-   upload-only check under the GitHub Actions service context, and real
-   completion/fault/recovery qualification on an approved disposable IIS site.
-   Normal deployment remains blocked.
+   initialization, before any upload was created.
+
+   **GitHub Actions service-context v2 upload/removal receipt (2026-11-23, passed):**
+   [Run 45228073398](https://github.com/SurePassId/SurePassIdApiServer/actions/runs/45228073398)
+   (job `137879867179`, succeeded in 21 seconds) executed from isolated temporary
+   branch `verify/step3-v2-upload-20261123-1228` (`a95dad28e3276370b7dcb8080148154801869089`)
+   using sparse checkout of the verified client/harness copies and the existing
+   `SANDBOX_VM_*` secrets, under the real GitHub Actions service account on
+   `GH-RUNNER-WIN`. The temporary branch was deleted remotely and locally after
+   verifying the receipt; `SurePassIdApiServer` `release/2026.4` and all caller
+   pins were unchanged.
+
+   | Field | Value |
+   | --- | --- |
+   | Runner / group / machine | `windows-build-vm (gh-runner-windows)` / `default` / `GH-RUNNER-WIN` |
+   | Runner Windows identity | `NT AUTHORITY\NETWORK SERVICE` |
+   | Execution host / mode / site | `GH-RUNNER-WIN` / `UploadOnly` / `api-sandbox.surepassid.com` |
+   | Upload ID | `e1d8ec86e0c0448c91e22bfda7315146` |
+   | Acknowledged bytes / chunks | 450809 / 3 |
+   | Local ZIP SHA-256 | `0C68B79A590F747F0A9117BF3CC7E8A708BB48D043DC2C2A98A59C66F1E0676D` |
+   | Client SHA-256 | `156505D9B8A5B08F347A7C146D3C58659A9AE5C4C925CF3BD8430CF93A087579` |
+   | Harness SHA-256 | `3E3467CFBDC9F4EF45A7F8875B201A673DF2011C3E9B0B36BF40640687AC3503` |
+   | Upload removed / completion attempted / fixture removed | True / False / True |
+   | Window (UTC) | 2026-11-23T17:28:52.9450857Z – 17:28:55.5562840Z |
+
+   Both interactive and GitHub Actions service-context upload-only checks have
+   now passed against the installed v2.0.0 endpoint. Still pending: real
+   completion/fault/recovery qualification on an approved disposable IIS site
+   (or an explicitly approved qualification decision). Normal deployment remains
+   blocked.
 
    [Install-SandboxDeployment.ps1](../server/Install-SandboxDeployment.ps1)
    provides the guarded transition for reviewed source bundles and a verified
@@ -1457,8 +1483,9 @@ completion failures remain mocked or isolated-site tests under Step 3.
       inert three-chunk upload/removal harness. Record run URL, installed
       module/role identities, runner identity and receipt. This must not call
       completion, deploy an application, alter IIS or create a release tag.
-      **Interactive check passed 2026-11-10 (receipt above); an Actions-service
-      run is still required.**
+      **Complete: interactive check passed 2026-11-10 and GitHub Actions
+      service-context check passed 2026-11-23 (`45228073398`, `NT AUTHORITY\NETWORK SERVICE`;
+      receipts above).**
    6. Separately approve an isolated disposable site and **server-owned** map
       entry/test health route with equivalent IIS/filesystem permissions for
       completion/fault-injection qualification. Do not add a caller-controlled
@@ -1528,10 +1555,18 @@ completion failures remain mocked or isolated-site tests under Step 3.
    - [x] Confirm the existing windows-build-vm route selects GH-RUNNER-WIN
      (gh-runner-windows), the user-corrected approved WinRM client. Keep its
      machine-name guard intact; no PRODUCT-SUP-01 routing change is required.
-   - [ ] Wire the compatible action into the canonical builder, preserving the
+   - [x] Wire the compatible action into the canonical builder, preserving the
      existing build/runtime/overlay behavior and completed Phase 1/2 contracts.
      Re-run relevant local tests, YAML/metadata checks, and caller-contract checks
      after integration changes.
+     **Updated 2026-11-23:** `deploy-iis-site` now validates the full v2.0.0
+     health-verified receipt, enforces API/MFA completion scope and exact health
+     URLs before WinRM, uses a 600-second completion `OperationTimeout`, and
+     removes owned uploads only after verified success (99 PS7 / 90 PS5.1
+     transport tests and 56 payload-policy tests passing). Pinned in
+     `build-deploy-sandboxvm.yaml` to prerequisite commit
+     `bcc236e8e6f970353716873a063bec801eaa1ded`. API/MFA callers remain on
+     `710df18` until secrets are provisioned and canaries are approved.
    - [ ] Rebuild API and MFA on the actual runner and validate the final effective
      configuration/license policy and clean publish output before deployment.
      Provision the three environment-specific configuration secrets as needed,
@@ -1545,10 +1580,13 @@ completion failures remain mocked or isolated-site tests under Step 3.
      report tagging failure distinctly when the application is already live.
 
 5. **Publish and activate with controlled canaries.**
-   - [ ] Publish any revised compatible action prerequisite first, then pin its
+   - [x] Publish any revised compatible action prerequisite first, then pin its
      full SHA in the shared workflow and publish that workflow. The previously
      published action is not restricted-endpoint compatible. Do not use a
      same-commit self-pin, mutable feature branch, or caller-local action path.
+     **Published 2026-11-23 on `feat/sandboxvm-hardening-phase3`:** action
+     prerequisite `bcc236e8e6f970353716873a063bec801eaa1ded`, then pinned in
+     `build-deploy-sandboxvm.yaml` in a separate follow-up commit.
    - [ ] Update API/MFA caller pins and any required contract mappings atomically
      per repository. Keep rollback pins/contracts recorded.
    - [ ] Run normal API and MFA sandbox deployment canaries against fresh healthy
