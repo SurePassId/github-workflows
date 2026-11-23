@@ -1,5 +1,5 @@
 name: Deploy IIS site
-description: Restricted sandbox ZIP transport; live deployment blocked pending server safety qualification.
+description: Deploy an IIS site through the restricted SandboxDeployment v2 JEA endpoint, or run upload-only transfer validation.
 inputs:
   computer-name:
     description: WinRM computer name
@@ -30,16 +30,16 @@ inputs:
     required: false
     default: ''
   health-check-url:
-    description: Required HTTPS health URL on app-env.surepassid.com; validated but not probed in upload-only mode
+    description: Required HTTPS health URL on app-env.surepassid.com; must match the server-qualified endpoint for API/MFA deployments
     required: true
   upload-only:
-    description: Explicitly validate upload and cleanup without deploying; false fails until server safety is qualified
+    description: Set to 'true' to validate upload and cleanup without deploying; 'false' (default) performs health-verified v2 deployment for API/MFA
     required: false
     default: 'false'
 runs:
   using: composite
   steps:
-    - name: Validate restricted sandbox upload (no deployment)
+    - name: Deploy or validate via restricted sandbox endpoint
       shell: pwsh
       env:
         DEPLOY_ACTION_PATH: ${{ github.action_path }}

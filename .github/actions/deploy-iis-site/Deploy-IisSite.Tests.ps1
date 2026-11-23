@@ -105,6 +105,7 @@ function New-Fixture {
     $script:cleanupFaults = @()
     $script:uploadId = '1234567890abcdef1234567890abcdef'
     $script:session = [pscustomobject]@{ State = 'Opened'; Availability = 'Available' }
+    $script:lastSessionOption = $null
 }
 
 function Test-Case {
@@ -124,6 +125,7 @@ function Test-Case {
 function New-PSSession {
     param($ComputerName, $Credential, $ConfigurationName, $Authentication, $SessionOption, $ErrorAction)
     $script:events.Add('session-open')
+    $script:lastSessionOption = $SessionOption
     Assert-True ($ComputerName -eq 'sandbox-app') 'Approved target.'
     Assert-True ($ConfigurationName -ceq 'SurePassID.SandboxDeploy') 'Restricted endpoint selected.'
     Assert-True ($Authentication -eq 'Negotiate') 'Authentication is not weakened.'
@@ -242,6 +244,11 @@ function Invoke-Command {
                 Destination = $script:config.Destination
                 Backup = [IO.Path]::Combine([IO.Path]::GetDirectoryName($script:config.Destination), ($script:config.Domain + '_2026-11-09_120000.zip'))
                 State = 'Started'
+                HealthStatus = 200
+                HealthUrl = $script:config.HealthUrl
+                HealthVerified = $true
+                ModuleVersion = '2.0.0'
+                UploadId = $script:uploadId
             }
             switch ($script:fault) {
                 'result-missing' { return }
@@ -252,6 +259,22 @@ function Invoke-Command {
                 'result-backup' { $result.Backup = 'C:\unapproved.zip' }
                 'result-state' { $result.State = 'Stopped' }
                 'result-type' { $result.State = 200 }
+                'result-v1-legacy' {
+                    $result = [pscustomobject]@{
+                        SiteName = $script:config.Domain
+                        Destination = $script:config.Destination
+                        Backup = $result.Backup
+                        State = 'Started'
+                    }
+                }
+                'result-health-unverified' { $result.HealthVerified = $false }
+                'result-health-type' { $result.HealthVerified = 'true' }
+                'result-health-status' { $result.HealthStatus = 503 }
+                'result-health-status-type' { $result.HealthStatus = '200' }
+                'result-health-url' { $result.HealthUrl = 'https://api-sandbox.surepassid.com/other' }
+                'result-module-version' { $result.ModuleVersion = '1.0.0' }
+                'result-upload-id' { $result.UploadId = 'abcdef1234567890abcdef1234567890' }
+                'complete-session-lost' { $script:session.State = 'Broken' }
             }
             return $result
         }
@@ -294,6 +317,20 @@ try {
         Assert-True ($receipt.Mode -ceq 'UploadOnly' -and $receipt.ChunkCount -eq 3 -and
             $receipt.AcknowledgedBytes -eq $expectedBytes.Length -and $receipt.UploadRemoved -and
             !$receipt.CompletionAttempted -and $receipt.LocalZipSha256 -cmatch '^[A-F0-9]{64}$') 'Structured upload-only evidence.'
+        Assert-True ($script:lastSessionOption.OperationTimeout -eq [timespan]::FromSeconds(60)) 'Upload-only uses 60s operation timeout.'
+    }
+    Test-Case 'verified v2 completion deploys, validates health receipt, uses extended timeout and cleans owned upload' {
+        $expectedBytes = $script:package.ToArray()
+        $receipt = Send-SandboxPackage $script:config $script:package -Complete
+        Assert-True ($script:lastSessionOption.OperationTimeout -eq [timespan]::FromSeconds(600)) 'Live completion uses 600s operation timeout.'
+        Assert-True ($script:events.Contains('Complete-SandboxDeployment')) 'Completion invoked.'
+        Assert-True ($script:events.Contains('Remove-SandboxUpload') -and $script:events.Contains('session-close')) 'Owned upload and session cleaned after verified success.'
+        Assert-True ($receipt.Mode -ceq 'Deploy' -and $receipt.SiteName -ceq $script:config.Domain -and
+            $receipt.Destination -ieq $script:config.Destination -and $receipt.State -ceq 'Started' -and
+            $receipt.HealthVerified -eq $true -and $receipt.HealthStatus -eq 200 -and
+            $receipt.HealthUrl -ceq $script:config.HealthUrl -and $receipt.ModuleVersion -ceq '2.0.0' -and
+            $receipt.UploadId -ceq $script:uploadId -and $receipt.AcknowledgedBytes -eq $expectedBytes.Length -and
+            $receipt.ChunkCount -eq 3 -and $receipt.UploadRemoved -and $receipt.CompletionAttempted) 'Verified v2 deployment receipt.'
     }
     Test-Case 'exact package, expanded and entry-count ceilings are accepted without large allocations' {
         Assert-SandboxPackageLimits 4GB 8GB 100000
@@ -372,7 +409,9 @@ try {
         Assert-True (!$script:events.Contains('Remove-SandboxUpload') -and $script:events.Contains('session-close')) 'No unsafe removal.'
     }
     foreach ($faultName in @('corrupt', 'truncated', 'complete-denied', 'complete-lost', 'result-missing',
-        'result-multiple', 'result-property', 'result-site', 'result-path', 'result-backup', 'result-state', 'result-type')) {
+        'result-multiple', 'result-property', 'result-site', 'result-path', 'result-backup', 'result-state', 'result-type',
+        'result-v1-legacy', 'result-health-unverified', 'result-health-type', 'result-health-status',
+        'result-health-status-type', 'result-health-url', 'result-module-version', 'result-upload-id')) {
         Test-Case "$faultName retains completion recovery data and fails explicitly" {
             $script:fault = $faultName
             $message = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } '.'
@@ -391,9 +430,38 @@ try {
             }
         }
     }
-    Test-Case 'IIS Started completion is never reported as qualified application success' {
-        $message = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } 'not qualified application health'
-        Assert-True (!$script:events.Contains('Remove-SandboxUpload')) 'Even successful server result retains upload pending safety qualification.'
+    Test-Case 'post-completion upload cleanup failure surfaces deployment success and retained upload' {
+        $script:cleanupFaults = @('remove')
+        $message = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } 'Deployment succeeded and health was verified'
+        Assert-True ($message -match 'Upload remove fault' -and $message.Contains($script:uploadId)) 'Cleanup failure identifies upload.'
+        Assert-True ($script:events.Contains('session-close')) 'Session still closes.'
+    }
+    Test-Case 'session unavailable after verified completion reports retained upload without unsafe removal' {
+        $script:fault = 'complete-session-lost'
+        $message = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } 'Deployment succeeded and health was verified'
+        Assert-True ($message -match 'retained' -and $message.Contains($script:uploadId)) 'Retained upload reported.'
+        Assert-True (!$script:events.Contains('Remove-SandboxUpload') -and $script:events.Contains('session-close')) 'No removal on broken session.'
+    }
+    foreach ($unqualifiedApp in @(
+        @{ App = 'push'; SiteEnv = 'sandbox'; Url = 'https://push-sandbox.surepassid.com/status' },
+        @{ App = 'oidc'; SiteEnv = 'sandbox'; Url = 'https://oidc-sandbox.surepassid.com/status' },
+        @{ App = 'oidc-client'; SiteEnv = 'alpha'; Url = 'https://oidc-client-alpha.surepassid.com/status' }
+    )) {
+        Test-Case "live completion rejects unqualified app $($unqualifiedApp.App) before WinRM" {
+            $env:DEPLOY_APP_NAME = $unqualifiedApp.App
+            $env:DEPLOY_SITE_ENV = $unqualifiedApp.SiteEnv
+            $env:DEPLOY_HEALTH_CHECK_URL = $unqualifiedApp.Url
+            $script:config = New-DeploymentConfig
+            $null = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } 'only qualified for API and MFA'
+            Assert-True ($script:events.Count -eq 0) 'No connection opened for unqualified app.'
+        }
+    }
+    Test-Case 'live completion rejects mismatched health URL before WinRM' {
+        $env:DEPLOY_APP_NAME = 'mfa'
+        $env:DEPLOY_HEALTH_CHECK_URL = 'https://mfa-sandbox.surepassid.com/status'
+        $script:config = New-DeploymentConfig
+        $null = Assert-Throws { Send-SandboxPackage $script:config $script:package -Complete } 'does not match the server-qualified endpoint'
+        Assert-True ($script:events.Count -eq 0) 'No connection opened for mismatched health URL.'
     }
     Test-Case 'append failure survives both upload and session cleanup failures' {
         $script:fault = 'append-denied'
@@ -483,17 +551,23 @@ try {
             $null = Assert-Throws { Assert-ChildName $childName } 'direct child'
         }
     }
-    Test-Case 'default action mode fails closed before touching source or network' {
-        $env:COMPUTERNAME = 'DEVELOPMENT-PC'
-        $null = Assert-Throws { Invoke-Deployment } 'Live completion is blocked'
-        Assert-True ($script:events.Count -eq 0) 'No network.'
-    }
     Test-Case 'transport primitive also rejects the wrong execution host' {
         $env:COMPUTERNAME = 'DEVELOPMENT-PC'
         $null = Assert-Throws { Send-SandboxPackage $script:config $script:package } 'GH-RUNNER-WIN'
         Assert-True ($script:events.Count -eq 0) 'No network.'
     }
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        Test-Case 'entry rejects PowerShell 5.1 before touching source or network' {
+            $null = Assert-Throws { Invoke-Deployment } 'Runner requires PowerShell 7'
+            Assert-True ($script:events.Count -eq 0) 'No network.'
+        }
+    }
     if ($PSVersionTable.PSVersion.Major -ge 7) {
+        Test-Case 'default action mode still rejects the wrong execution host before touching source or network' {
+            $env:COMPUTERNAME = 'DEVELOPMENT-PC'
+            $null = Assert-Throws { Invoke-Deployment } 'GH-RUNNER-WIN'
+            Assert-True ($script:events.Count -eq 0) 'No network.'
+        }
         Test-Case 'operator validation uses inert data and restores credentials after mocked upload' {
             . (Join-Path $PSScriptRoot 'Test-SandboxUpload.ps1')
             $credential = [Management.Automation.PSCredential]::new('SANDBOX-APP\github-deploy',
@@ -527,6 +601,32 @@ try {
             Assert-True ($env:DEPLOY_PASSWORD -ceq $priorPassword -and $env:DEPLOY_SOURCE_PATH -ceq $priorSource) 'Credentials/source restored after failure.'
             Assert-True (@(Get-ChildItem -LiteralPath $script:fixture -Filter 'step1c-inert-*').Count -eq 0) 'Inert fixture cleaned after failure.'
             Assert-True (!$script:events.Contains('Complete-SandboxDeployment')) 'No completion.'
+        }
+        Test-Case 'entry deploys and cleans owned ZIP and remote upload for API and MFA' {
+            Set-Content -LiteralPath (Join-Path $script:fixture 'unrelated.txt') -Value 'retain'
+            $apiReceipt = Invoke-Deployment
+            Assert-True ($apiReceipt.Mode -ceq 'Deploy' -and $apiReceipt.HealthVerified -and $apiReceipt.UploadRemoved) 'API deployment verified.'
+            Assert-True (@(Get-ChildItem -LiteralPath $script:fixture -Filter 'sandbox-upload-*.zip').Count -eq 0) 'Owned ZIP removed after deployment.'
+            Assert-True (Test-Path -LiteralPath (Join-Path $script:fixture 'unrelated.txt')) 'Unrelated file retained.'
+            Assert-True ($script:events.Contains('Complete-SandboxDeployment')) 'API completion called.'
+
+            $script:events.Clear()
+            $script:remote.SetLength(0)
+            $env:DEPLOY_APP_NAME = 'mfa'
+            $env:DEPLOY_HEALTH_CHECK_URL = 'https://mfa-sandbox.surepassid.com/server/HealthCheck.aspx'
+            $script:config = New-DeploymentConfig
+            $mfaReceipt = Invoke-Deployment
+            Assert-True ($mfaReceipt.Mode -ceq 'Deploy' -and $mfaReceipt.SiteName -ceq 'mfa-sandbox.surepassid.com' -and
+                $mfaReceipt.HealthUrl -ceq 'https://mfa-sandbox.surepassid.com/server/HealthCheck.aspx' -and
+                $mfaReceipt.HealthVerified -and $mfaReceipt.UploadRemoved) 'MFA deployment verified.'
+            Assert-True ($script:events.Contains('Complete-SandboxDeployment')) 'MFA completion called.'
+        }
+        Test-Case 'entry rejects unqualified app before creating local archive or network session' {
+            $env:DEPLOY_APP_NAME = 'oidc'
+            $env:DEPLOY_HEALTH_CHECK_URL = 'https://oidc-sandbox.surepassid.com/status'
+            $null = Assert-Throws { Invoke-Deployment } 'only qualified for API and MFA'
+            Assert-True (@(Get-ChildItem -LiteralPath $script:fixture -Filter 'sandbox-upload-*.zip').Count -eq 0) 'No local ZIP created.'
+            Assert-True ($script:events.Count -eq 0) 'No network session.'
         }
         Test-Case 'entry uploads only, disposes owned ZIP and leaves unrelated files intact' {
             Set-Content -LiteralPath (Join-Path $script:fixture 'unrelated.txt') -Value 'retain'
@@ -569,14 +669,14 @@ try {
             Assert-True ($script:events.Count -eq 0) 'No network.'
         }
     }
-    Test-Case 'action retains all inputs via env and defaults to deployment blocked' {
+    Test-Case 'action retains all inputs via env and defaults upload-only to false' {
         $yaml = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'action.yaml') -Raw
         Assert-True (($yaml -split 'run: \|')[1] -notmatch '\$\{\{') 'No expression interpolation in script.'
         foreach ($inputName in @('computer-name', 'username', 'password', 'site-env', 'app-name',
             'source-path', 'app-assembly', 'run-id', 'keep-list', 'health-check-url', 'upload-only')) {
             Assert-True ($yaml.Contains('${{ inputs.' + $inputName + ' }}')) "Input $inputName passed via env."
         }
-        Assert-True ($yaml -match "(?s)upload-only:.*?default: 'false'") 'Deployment blocked by default.'
+        Assert-True ($yaml -match "(?s)upload-only:.*?default: 'false'") 'upload-only defaults to false.'
     }
     Write-Host "RESULT: $script:passed isolated tests passed; no real WinRM, IIS, HTTP or server function calls."
 } finally {

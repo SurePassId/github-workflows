@@ -126,6 +126,7 @@ function New-DeploymentConfig {
         throw 'Source assembly must be a nonempty file.'
     }
     return [pscustomobject]@{
+        AppName = $env:DEPLOY_APP_NAME
         Domain = $domain
         Destination = $destination
         Source = $source
@@ -134,6 +135,17 @@ function New-DeploymentConfig {
         HealthUrl = $healthUri.AbsoluteUri
         RunId = $env:DEPLOY_RUN_ID
         ComputerName = $env:DEPLOY_COMPUTER_NAME
+    }
+}
+
+function Get-QualifiedHealthUrl {
+    param([string]$AppName, [string]$Domain)
+    switch ($AppName) {
+        'api' { return "https://$Domain/status" }
+        'mfa' { return "https://$Domain/server/HealthCheck.aspx" }
+        default {
+            throw 'Live completion is only qualified for API and MFA. Use upload-only for other applications until health-qualified.'
+        }
     }
 }
 
@@ -235,35 +247,53 @@ function Invoke-SandboxCommand {
 }
 
 function Assert-SandboxCompletion {
-    param([object[]]$Results, $Config)
+    param([object[]]$Results, $Config, [string]$UploadId)
     if ($Results.Count -ne 1 -or $null -eq $Results[0]) {
         throw 'Invalid completion result count.'
     }
     $result = $Results[0]
-    foreach ($propertyName in @('SiteName', 'Destination', 'Backup', 'State')) {
+    foreach ($propertyName in @('SiteName', 'Destination', 'Backup', 'State', 'HealthUrl', 'ModuleVersion', 'UploadId')) {
         if ($result.PSObject.Properties.Name -notcontains $propertyName -or
             $result.$propertyName -isnot [string]) {
             throw "Invalid completion result property: $propertyName."
         }
     }
+    if ($result.PSObject.Properties.Name -notcontains 'HealthVerified' -or
+        $result.HealthVerified -isnot [bool] -or !$result.HealthVerified) {
+        throw 'Invalid completion result property: HealthVerified must be boolean true.'
+    }
+    if ($result.PSObject.Properties.Name -notcontains 'HealthStatus' -or
+        $result.HealthStatus -isnot [int] -or $result.HealthStatus -ne 200) {
+        throw 'Invalid completion result property: HealthStatus must be integer 200.'
+    }
     $backupParent = [IO.Path]::GetDirectoryName($Config.Destination)
     $backupPattern = '^' + [regex]::Escape($Config.Domain) + '_\d{4}-\d{2}-\d{2}_\d{6}\.zip$'
     if ($result.SiteName -cne $Config.Domain -or $result.Destination -ine $Config.Destination -or
         $result.State -cne 'Started' -or [IO.Path]::GetDirectoryName($result.Backup) -ine $backupParent -or
-        [IO.Path]::GetFileName($result.Backup) -cnotmatch $backupPattern) {
-        throw 'Completion result does not match the requested site and approved backup location.'
+        [IO.Path]::GetFileName($result.Backup) -cnotmatch $backupPattern -or
+        $result.HealthUrl -cne $Config.HealthUrl -or $result.ModuleVersion -cne '2.0.0' -or
+        $result.UploadId -cne $UploadId) {
+        throw 'Completion result does not match the requested site, health endpoint, module version, upload ID, or approved backup location.'
     }
+    return $result
 }
 
 function Send-SandboxPackage {
     param($Config, [IO.Stream]$Stream, [switch]$Complete)
     $ErrorActionPreference = 'Stop'
+    if ($Complete) {
+        $expectedHealthUrl = Get-QualifiedHealthUrl $Config.AppName $Config.Domain
+        if ($Config.HealthUrl -cne $expectedHealthUrl) {
+            throw "Health URL '$($Config.HealthUrl)' does not match the server-qualified endpoint '$expectedHealthUrl'."
+        }
+    }
     $sha256 = Get-SandboxPackageHash $Stream
     $session = $null
     $uploadId = $null
     $createAttempted = $false
     $completionAttempted = $false
     $completionValidated = $false
+    $completionResult = $null
     $failure = $null
     $cleanupIssues = [Collections.Generic.List[string]]::new()
     try {
@@ -272,9 +302,10 @@ function Send-SandboxPackage {
         }
         $credential = [Management.Automation.PSCredential]::new($env:DEPLOY_USERNAME,
             (ConvertTo-SecureString $env:DEPLOY_PASSWORD -AsPlainText -Force))
+        $operationTimeoutMs = if ($Complete) { 600000 } else { 60000 }
         $session = New-PSSession -ComputerName $Config.ComputerName -Credential $credential `
             -ConfigurationName 'SurePassID.SandboxDeploy' -Authentication Negotiate `
-            -SessionOption (New-PSSessionOption -OpenTimeout 30000 -OperationTimeout 60000) -ErrorAction Stop
+            -SessionOption (New-PSSessionOption -OpenTimeout 30000 -OperationTimeout $operationTimeoutMs) -ErrorAction Stop
         if ($session.State -ne 'Opened' -or $session.Availability -ne 'Available') {
             throw 'Restricted endpoint session did not become available.'
         }
@@ -303,16 +334,16 @@ function Send-SandboxPackage {
             throw 'Incomplete ZIP transfer; completion was not attempted.'
         }
         if ($Complete) {
-            # Only the isolated harness calls this primitive until Steps 2/3 qualify server safety.
             $completionAttempted = $true
             $results = @(Invoke-SandboxCommand -Session $session -Operation Complete -UploadId $uploadId -Sha256 $sha256)
-            Assert-SandboxCompletion $results $Config
+            $completionResult = Assert-SandboxCompletion $results $Config $uploadId
             $completionValidated = $true
         }
     } catch {
         $failure = $_
     } finally {
-        if ($uploadId -and !$completionAttempted -and $session -and
+        $safeToRemoveUpload = $uploadId -and (!$completionAttempted -or $completionValidated)
+        if ($safeToRemoveUpload -and $session -and
             $session.State -eq 'Opened' -and $session.Availability -eq 'Available') {
             try {
                 $removeResults = @(Invoke-SandboxCommand -Session $session -Operation Remove -UploadId $uploadId)
@@ -320,13 +351,18 @@ function Send-SandboxPackage {
                     throw 'Unexpected upload-removal response.'
                 }
             } catch {
-                $cleanupIssues.Add("Upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
+                if ($completionValidated) {
+                    $cleanupIssues.Add("Deployment succeeded and health was verified, but upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
+                } else {
+                    $cleanupIssues.Add("Upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
+                }
             }
         } elseif ($uploadId) {
             if ($completionValidated) {
-                $cleanupIssues.Add('Server reported IIS Started, not qualified application health. Steps 2/3 still block live deployment.')
+                $cleanupIssues.Add("Deployment succeeded and health was verified, but upload $uploadId was retained because the session became unavailable. Operator cleanup is required.")
+            } else {
+                $cleanupIssues.Add("Upload $uploadId retained: completion was attempted or the session is unavailable. Operator inspection is required before removal.")
             }
-            $cleanupIssues.Add("Upload $uploadId retained: completion was attempted or the session is unavailable. Operator inspection is required before removal.")
         } elseif ($createAttempted) {
             $cleanupIssues.Add('Upload creation outcome is unknown; inspect server staging. No identifier was guessed or removed.')
         }
@@ -344,6 +380,26 @@ function Send-SandboxPackage {
     }
     if ($cleanupIssues.Count -gt 0) {
         throw ($cleanupIssues -join '; ')
+    }
+    if ($Complete) {
+        Write-Host "Deployment verified for $($Config.Domain): $offset bytes uploaded; backup $($completionResult.Backup); HTTP $($completionResult.HealthStatus) verified at $($completionResult.HealthUrl) (module $($completionResult.ModuleVersion)); owned upload removed."
+        return [pscustomobject]@{
+            Mode = 'Deploy'
+            SiteName = $completionResult.SiteName
+            Destination = $completionResult.Destination
+            Backup = $completionResult.Backup
+            State = $completionResult.State
+            HealthStatus = $completionResult.HealthStatus
+            HealthUrl = $completionResult.HealthUrl
+            HealthVerified = $completionResult.HealthVerified
+            ModuleVersion = $completionResult.ModuleVersion
+            UploadId = $uploadId
+            AcknowledgedBytes = $offset
+            ChunkCount = $chunkCount
+            LocalZipSha256 = $sha256
+            UploadRemoved = $true
+            CompletionAttempted = $true
+        }
     }
     Write-Host "Upload-only validation finished for $($Config.Domain): $offset bytes acknowledged; owned upload removed. No deployment or health verification performed."
     return [pscustomobject]@{
@@ -377,13 +433,16 @@ function Remove-OwnedArchive {
 function Invoke-Deployment {
     param([switch]$UploadOnly)
     $ErrorActionPreference = 'Stop'
-    if (!$UploadOnly) {
-        throw 'Live completion is blocked until Steps 2/3 qualify preservation, health and rollback. Use upload-only explicitly for approved transfer validation.'
-    }
     if ($PSVersionTable.PSVersion.Major -lt 7) {
         throw 'Runner requires PowerShell 7.'
     }
     $config = New-DeploymentConfig
+    if (!$UploadOnly) {
+        $expectedHealthUrl = Get-QualifiedHealthUrl $config.AppName $config.Domain
+        if ($config.HealthUrl -cne $expectedHealthUrl) {
+            throw "Health URL '$($config.HealthUrl)' does not match the server-qualified endpoint '$expectedHealthUrl'."
+        }
+    }
     $temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
     $temp = [IO.Path]::GetFullPath($temp).TrimEnd('\', '/')
     Assert-SafeAncestors $temp
@@ -399,7 +458,7 @@ function Invoke-Deployment {
         $stream = [IO.File]::Open($archivePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $owned = $true
         Write-SandboxArchive $config.Source $stream
-        $receipt = Send-SandboxPackage -Config $config -Stream $stream
+        $receipt = Send-SandboxPackage -Config $config -Stream $stream -Complete:(!$UploadOnly)
     } catch {
         $failure = $_
     } finally {
