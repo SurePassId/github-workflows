@@ -32,11 +32,38 @@ jobs:
     runs-on: [self-hosted, windows-build-vm]
 
     steps:
+      # actions/checkout grants the SSH key to "$USERDOMAIN\$USERNAME" via icacls. When the runner
+      # service runs as NETWORK SERVICE or SYSTEM, that resolves to an unmappable "WORKGROUP\HOST$".
+      - name: Resolve runner Windows identity
+        id: runner-identity
+        shell: pwsh
+        run: |
+          $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $identityParts = $identityName.Split('\', 2)
+          if ($identityParts.Count -ne 2) {
+            throw "Unexpected Windows identity format: '$identityName'"
+          }
+          Write-Host "Runner Windows identity: $identityName"
+          "domain=$($identityParts[0])" >> $env:GITHUB_OUTPUT
+          "user=$($identityParts[1])" >> $env:GITHUB_OUTPUT
+
+      # Some self-hosted runners block outbound port 22, so route SSH through GitHub's
+      # ssh.github.com:443 endpoint. GIT_CONFIG_* scopes the URL rewrite to this step.
       - name: Checkout repository and submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        env:
+          USERDOMAIN: ${{steps.runner-identity.outputs.domain}}
+          USERNAME: ${{steps.runner-identity.outputs.user}}
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.ssh://git@ssh.github.com:443/.insteadOf
+          GIT_CONFIG_VALUE_0: 'git@github.com:'
         with:
           submodules: recursive
           ssh-key: ${{secrets.SSH_KEY}}
+          ssh-known-hosts: |
+            [ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+            [ssh.github.com]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+            [ssh.github.com]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
 
       - name: Initialize publish directory
         id: publish-directory
