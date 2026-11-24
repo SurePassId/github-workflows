@@ -3,6 +3,18 @@
 Review date: 2026-11-04.
 Remaining-work checklist refreshed: 2026-11-09.
 
+> **Direction change (2026-11-23), superseding conflicting text below:**
+> Current focus is `api-dev`, `mfa-dev` and `saml2-dev`. At the user's direction,
+> environment-specific configuration comes from each application repository
+> (`environment-files/<env>/`), not `SANDBOX_CONFIGURATION_*` secret bundles.
+> `site.lic` may live outside the deployment folder via application configuration.
+> HTTP health checks are deferred: SandboxDeployment v2.1.0 stops, backs up,
+> replaces and starts the site, with unchanged journaled rollback, but neither
+> requires a healthy baseline nor probes health. SAML2 is added, and MFA's four
+> known virtual directories are allowlisted. Server v2.1.0 and the action are at
+> `035aafcec81af492af217d3d601e78a4f34b7c91`; v2.1.0 is not yet installed on
+> sandbox-app and callers are not yet repinned.
+
 ## Scope and current status
 
 Implement the reviewed hardening in the
