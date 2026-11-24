@@ -56,7 +56,7 @@ function Get-SafeSourceItems {
 function Get-SandboxDestination {
     param([string]$App, [string]$SiteEnv)
     if ($SiteEnv -cnotin @('alpha', 'dev', 'sandbox') -or
-        $App -cnotin @('api', 'mfa', 'push', 'oidc', 'oidc-client')) {
+        $App -cnotin @('api', 'mfa', 'saml2', 'push', 'oidc', 'oidc-client')) {
         throw 'Invalid app-name or site-env.'
     }
     if (($App -eq 'oidc' -and $SiteEnv -eq 'dev') -or
@@ -84,11 +84,15 @@ function New-DeploymentConfig {
     if ($env:DEPLOY_RUN_ID -cnotmatch '^[1-9][0-9]*-[1-9][0-9]*$') {
         throw 'Invalid numeric run-id-attempt.'
     }
-    $healthUri = $null
-    if (![Uri]::TryCreate($env:DEPLOY_HEALTH_CHECK_URL, [UriKind]::Absolute, [ref]$healthUri) -or
-        $healthUri.Scheme -ne 'https' -or $healthUri.Host -ne $domain -or
-        !$healthUri.IsDefaultPort -or $healthUri.UserInfo -or $healthUri.Fragment) {
-        throw 'Health URL must use HTTPS on the exact app/environment host, default port, without credentials or fragment.'
+    $healthUrlText = ''
+    if (![string]::IsNullOrWhiteSpace($env:DEPLOY_HEALTH_CHECK_URL)) {
+        $healthUri = $null
+        if (![Uri]::TryCreate($env:DEPLOY_HEALTH_CHECK_URL, [UriKind]::Absolute, [ref]$healthUri) -or
+            $healthUri.Scheme -ne 'https' -or $healthUri.Host -ne $domain -or
+            !$healthUri.IsDefaultPort -or $healthUri.UserInfo -or $healthUri.Fragment) {
+            throw 'Health URL must use HTTPS on the exact app/environment host, default port, without credentials or fragment.'
+        }
+        $healthUrlText = $healthUri.AbsoluteUri
     }
     $assembly = Convert-AssemblyPath $env:DEPLOY_APP_ASSEMBLY
     $keep = @()
@@ -102,8 +106,8 @@ function New-DeploymentConfig {
             $keep += $childName
         }
     }
-    if ($env:DEPLOY_APP_NAME -in @('api', 'mfa') -and $keep.Count) {
-        throw 'API/MFA configuration and licenses must be provisioned; keep-list retention is forbidden.'
+    if ($env:DEPLOY_APP_NAME -in @('api', 'mfa', 'saml2') -and $keep.Count) {
+        throw 'API/MFA/SAML2 configuration comes from the repository; keep-list retention is forbidden.'
     }
     $source = $env:DEPLOY_SOURCE_PATH
     if (!$source -or $source -notmatch '^[a-zA-Z]:[\\/]' -or
@@ -132,20 +136,16 @@ function New-DeploymentConfig {
         Source = $source
         Assembly = $assembly
         Keep = $keep
-        HealthUrl = $healthUri.AbsoluteUri
+        HealthUrl = $healthUrlText
         RunId = $env:DEPLOY_RUN_ID
         ComputerName = $env:DEPLOY_COMPUTER_NAME
     }
 }
 
-function Get-QualifiedHealthUrl {
-    param([string]$AppName, [string]$Domain)
-    switch ($AppName) {
-        'api' { return "https://$Domain/status" }
-        'mfa' { return "https://$Domain/server/HealthCheck.aspx" }
-        default {
-            throw 'Live completion is only qualified for API and MFA. Use upload-only for other applications until health-qualified.'
-        }
+function Assert-DeployableApp {
+    param([string]$AppName)
+    if ($AppName -cnotin @('api', 'mfa', 'saml2')) {
+        throw 'Live completion is only enabled for API, MFA, and SAML2. Use upload-only for other applications.'
     }
 }
 
@@ -252,28 +252,24 @@ function Assert-SandboxCompletion {
         throw 'Invalid completion result count.'
     }
     $result = $Results[0]
-    foreach ($propertyName in @('SiteName', 'Destination', 'Backup', 'State', 'HealthUrl', 'ModuleVersion', 'UploadId')) {
+    foreach ($propertyName in @('SiteName', 'Destination', 'Backup', 'State', 'HealthCheckMode', 'ModuleVersion', 'UploadId')) {
         if ($result.PSObject.Properties.Name -notcontains $propertyName -or
             $result.$propertyName -isnot [string]) {
             throw "Invalid completion result property: $propertyName."
         }
     }
     if ($result.PSObject.Properties.Name -notcontains 'HealthVerified' -or
-        $result.HealthVerified -isnot [bool] -or !$result.HealthVerified) {
-        throw 'Invalid completion result property: HealthVerified must be boolean true.'
-    }
-    if ($result.PSObject.Properties.Name -notcontains 'HealthStatus' -or
-        $result.HealthStatus -isnot [int] -or $result.HealthStatus -ne 200) {
-        throw 'Invalid completion result property: HealthStatus must be integer 200.'
+        $result.HealthVerified -isnot [bool]) {
+        throw 'Invalid completion result property: HealthVerified must be boolean.'
     }
     $backupParent = [IO.Path]::GetDirectoryName($Config.Destination)
     $backupPattern = '^' + [regex]::Escape($Config.Domain) + '_\d{4}-\d{2}-\d{2}_\d{6}\.zip$'
     if ($result.SiteName -cne $Config.Domain -or $result.Destination -ine $Config.Destination -or
         $result.State -cne 'Started' -or [IO.Path]::GetDirectoryName($result.Backup) -ine $backupParent -or
         [IO.Path]::GetFileName($result.Backup) -cnotmatch $backupPattern -or
-        $result.HealthUrl -cne $Config.HealthUrl -or $result.ModuleVersion -cne '2.0.0' -or
+        $result.HealthCheckMode -cne 'Deferred' -or $result.ModuleVersion -cne '2.1.0' -or
         $result.UploadId -cne $UploadId) {
-        throw 'Completion result does not match the requested site, health endpoint, module version, upload ID, or approved backup location.'
+        throw 'Completion result does not match the requested site, module version, upload ID, or approved backup location.'
     }
     return $result
 }
@@ -282,10 +278,7 @@ function Send-SandboxPackage {
     param($Config, [IO.Stream]$Stream, [switch]$Complete)
     $ErrorActionPreference = 'Stop'
     if ($Complete) {
-        $expectedHealthUrl = Get-QualifiedHealthUrl $Config.AppName $Config.Domain
-        if ($Config.HealthUrl -cne $expectedHealthUrl) {
-            throw "Health URL '$($Config.HealthUrl)' does not match the server-qualified endpoint '$expectedHealthUrl'."
-        }
+        Assert-DeployableApp $Config.AppName
     }
     $sha256 = Get-SandboxPackageHash $Stream
     $session = $null
@@ -352,14 +345,14 @@ function Send-SandboxPackage {
                 }
             } catch {
                 if ($completionValidated) {
-                    $cleanupIssues.Add("Deployment succeeded and health was verified, but upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
+                    $cleanupIssues.Add("Deployment succeeded and IIS started, but upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
                 } else {
                     $cleanupIssues.Add("Upload cleanup failed for ${uploadId}: $($_.Exception.Message)")
                 }
             }
         } elseif ($uploadId) {
             if ($completionValidated) {
-                $cleanupIssues.Add("Deployment succeeded and health was verified, but upload $uploadId was retained because the session became unavailable. Operator cleanup is required.")
+                $cleanupIssues.Add("Deployment succeeded and IIS started, but upload $uploadId was retained because the session became unavailable. Operator cleanup is required.")
             } else {
                 $cleanupIssues.Add("Upload $uploadId retained: completion was attempted or the session is unavailable. Operator inspection is required before removal.")
             }
@@ -382,15 +375,14 @@ function Send-SandboxPackage {
         throw ($cleanupIssues -join '; ')
     }
     if ($Complete) {
-        Write-Host "Deployment verified for $($Config.Domain): $offset bytes uploaded; backup $($completionResult.Backup); HTTP $($completionResult.HealthStatus) verified at $($completionResult.HealthUrl) (module $($completionResult.ModuleVersion)); owned upload removed."
+        Write-Host "Deployment completed for $($Config.Domain): $offset bytes uploaded; backup $($completionResult.Backup); IIS $($completionResult.State); health check $($completionResult.HealthCheckMode) (module $($completionResult.ModuleVersion)); owned upload removed."
         return [pscustomobject]@{
             Mode = 'Deploy'
             SiteName = $completionResult.SiteName
             Destination = $completionResult.Destination
             Backup = $completionResult.Backup
             State = $completionResult.State
-            HealthStatus = $completionResult.HealthStatus
-            HealthUrl = $completionResult.HealthUrl
+            HealthCheckMode = $completionResult.HealthCheckMode
             HealthVerified = $completionResult.HealthVerified
             ModuleVersion = $completionResult.ModuleVersion
             UploadId = $uploadId
@@ -438,10 +430,7 @@ function Invoke-Deployment {
     }
     $config = New-DeploymentConfig
     if (!$UploadOnly) {
-        $expectedHealthUrl = Get-QualifiedHealthUrl $config.AppName $config.Domain
-        if ($config.HealthUrl -cne $expectedHealthUrl) {
-            throw "Health URL '$($config.HealthUrl)' does not match the server-qualified endpoint '$expectedHealthUrl'."
-        }
+        Assert-DeployableApp $config.AppName
     }
     $temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
     $temp = [IO.Path]::GetFullPath($temp).TrimEnd('\', '/')

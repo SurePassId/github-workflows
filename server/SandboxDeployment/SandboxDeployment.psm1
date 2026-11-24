@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem, 
 function Get-SandboxSiteMap {
     $sites = @{}
     foreach ($environment in @('alpha', 'dev', 'sandbox')) {
-        foreach ($application in @('mfa', 'api', 'push')) {
+        foreach ($application in @('mfa', 'api', 'saml2', 'push')) {
             $siteName = "$application-$environment.surepassid.com"
             $sites[$siteName] = "E:\iis_sites\$environment\$siteName"
         }
@@ -14,6 +14,20 @@ function Get-SandboxSiteMap {
     $sites['oidc-sandbox.surepassid.com'] = 'E:\iis_sites\sandbox\oidc\oidc-sandbox.surepassid.com'
     $sites['oidc-client-alpha.surepassid.com'] = 'E:\iis_sites\alpha\oidc-client-alpha.surepassid.com'
     return $sites
+}
+
+function Get-SandboxAllowedVirtualDirectories {
+    param([string]$SiteName, [string]$SitePath)
+    if ($SiteName -cmatch '^mfa-(?<siteEnv>alpha|dev|sandbox)\.surepassid\.com$') {
+        $siteEnv = $Matches.siteEnv
+        return @{
+            '/.well-known'            = "E:\iis_sites\well-known-common\$siteEnv"
+            '/oath-ota-provision'     = [IO.Path]::Combine($SitePath, 'oath-ota-provision')
+            '/otp-push-ota-provision' = [IO.Path]::Combine($SitePath, 'otp-push-ota-provision')
+            '/push-ota-provision'     = [IO.Path]::Combine($SitePath, 'push-ota-provision')
+        }
+    }
+    return @{}
 }
 
 function Assert-SandboxTree {
@@ -40,10 +54,21 @@ function Get-SandboxTarget {
     $site = Get-Item -LiteralPath "IIS:\Sites\$SiteName" -ErrorAction Stop
     $expectedPath = $sites[$SiteName]
     $actualPath = [Environment]::ExpandEnvironmentVariables([string]$site.PhysicalPath)
+    $allowedVdirs = Get-SandboxAllowedVirtualDirectories $SiteName $expectedPath
+    $unexpectedVdirs = @()
+    foreach ($vdir in @(Get-WebVirtualDirectory -Site $SiteName | Where-Object { $_.Path -cne '/' })) {
+        $vdirPath = [string]$vdir.Path
+        $vdirPhysical = [Environment]::ExpandEnvironmentVariables([string]$vdir.PhysicalPath)
+        if (-not $allowedVdirs.ContainsKey($vdirPath) -or
+            [string]::IsNullOrWhiteSpace($vdirPhysical) -or
+            [IO.Path]::GetFullPath($vdirPhysical).TrimEnd('\') -ine $allowedVdirs[$vdirPath]) {
+            $unexpectedVdirs += $vdirPath
+        }
+    }
     if ([IO.Path]::GetFullPath($actualPath).TrimEnd('\') -ine $expectedPath -or
         [string]$site.ApplicationPool -ine $SiteName -or
         @(Get-WebApplication -Site $SiteName | Where-Object { $_.Path -cne '/' }).Count -or
-        @(Get-WebVirtualDirectory -Site $SiteName | Where-Object { $_.Path -cne '/' }).Count -or
+        $unexpectedVdirs.Count -or
         @(Get-Website | Where-Object { $_.Name -ine $SiteName -and $_.ApplicationPool -ieq $SiteName }).Count -or
         @(Get-WebApplication | Where-Object { $_.Path -cne '/' -and $_.ApplicationPool -ieq $SiteName }).Count) {
         throw 'IIS path, dedicated pool, child applications or virtual directories differ from the approved mapping.'
@@ -299,16 +324,23 @@ function Read-SandboxXml {
     } catch { throw 'Invalid staged XML configuration; content suppressed.' }
 }
 
+function Assert-SandboxDeployableSite {
+    param([string]$SiteName)
+    if ($SiteName -cnotmatch '^(api|mfa|saml2)-(alpha|dev|sandbox)\.surepassid\.com$') {
+        throw 'Completion for this application is not enabled. Upload-only remains available.'
+    }
+}
+
 function Get-SandboxHealthUrl {
     param([string]$SiteName)
     if ($SiteName -cmatch '^api-(alpha|dev|sandbox)\.surepassid\.com$') { return "https://$SiteName/status" }
-    if ($SiteName -cmatch '^mfa-(alpha|dev|sandbox)\.surepassid\.com$') { return "https://$SiteName/server/HealthCheck.aspx" }
-    throw 'Completion for this application is not health-qualified. Upload-only remains available.'
+    if ($SiteName -cmatch '^(mfa|saml2)-(alpha|dev|sandbox)\.surepassid\.com$') { return "https://$SiteName/server/HealthCheck.aspx" }
+    throw 'Completion for this application is not enabled. Upload-only remains available.'
 }
 
 function Assert-SandboxPayload {
     param($Target, [string]$Path)
-    $null = Get-SandboxHealthUrl $Target.SiteName
+    Assert-SandboxDeployableSite $Target.SiteName
     $configuration = Read-SandboxXml (Join-Path $Path 'web.config')
     if ($Target.SiteName -like 'mfa-*') {
         $assembly = 'bin\SurePassAdmin.dll'
@@ -318,10 +350,8 @@ function Assert-SandboxPayload {
             if ($settings.ContainsKey($key)) { throw 'Duplicate staged MFA setting.' }
             $settings[$key] = $setting.GetAttribute('value')
         }
-        if ($settings['MfaServerLicence.LicenseCode'] -or
-            $settings['MfaServerLicence.FilePath'] -ine [IO.Path]::Combine($Target.Path, 'bin') -or
-            $settings['MfaServerLicence.Filename'] -cne 'site.lic') { throw 'MFA license policy mismatch.' }
-        $licensePath = Join-Path $Path 'bin\site.lic'
+    } elseif ($Target.SiteName -like 'saml2-*') {
+        $assembly = 'bin\SurePassSSOIdentityProvider.dll'
     } else {
         $assembly = 'SurePassIdApiServer.dll'
         $environment = ($Target.SiteName -split '[.-]')[1]
@@ -330,30 +360,20 @@ function Assert-SandboxPayload {
         if (-not $runtimeSettings.Count -or @($runtimeSettings | Where-Object {
             $_.GetAttribute('value') -cne "mfa-$environment"
         }).Count) { throw 'API runtime environment mismatch.' }
-        foreach ($fileName in @('appsettings.json', "appsettings.mfa-$environment.json", 'appsettings.local.json')) {
+        foreach ($fileName in @('appsettings.json', "appsettings.mfa-$environment.json")) {
             try { $null = Get-Content -LiteralPath (Join-Path $Path $fileName) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop }
             catch { throw 'Invalid staged API JSON configuration; content suppressed.' }
         }
+        $localSettingsPath = Join-Path $Path 'appsettings.local.json'
+        if (Test-Path -LiteralPath $localSettingsPath -PathType Leaf) {
+            try { $null = Get-Content -LiteralPath $localSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop }
+            catch { throw 'Invalid staged API JSON configuration; content suppressed.' }
+        }
         $null = Read-SandboxXml (Join-Path $Path 'logging.config') 'log4net'
-        try {
-            $localSettings = Get-Content -LiteralPath (Join-Path $Path 'appsettings.local.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-            $license = $localSettings.AppSettings.MfaServerLicense
-            if ([string]::IsNullOrWhiteSpace($localSettings.ConnectionStrings.MFA) -or
-                [string]::IsNullOrWhiteSpace($license.ValidationKey) -or
-                $license.FilePath -ine $Target.Path -or $license.Filename -cne 'site.lic' -or
-                $license.LicenseCode -isnot [string]) { throw 'API policy mismatch.' }
-            $inlineLicense = -not [string]::IsNullOrEmpty($license.LicenseCode)
-        } catch { throw 'API local settings do not satisfy provisioning policy; content suppressed.' }
-        $licensePath = Join-Path $Path 'site.lic'
-        if ($inlineLicense) {
-            if (Test-Path -LiteralPath $licensePath) { throw 'Inline licensing must not also contain a license file.' }
-            $licensePath = $null
-        }
     }
-    foreach ($filePath in @((Join-Path $Path $assembly), $licensePath)) {
-        if ($filePath -and (-not [IO.File]::Exists($filePath) -or (Get-Item -LiteralPath $filePath).Length -le 0)) {
-            throw 'Required staged assembly or license is missing/empty.'
-        }
+    $assemblyPath = Join-Path $Path $assembly
+    if (-not [IO.File]::Exists($assemblyPath) -or (Get-Item -LiteralPath $assemblyPath).Length -le 0) {
+        throw 'Required staged assembly is missing/empty.'
     }
 }
 
@@ -562,7 +582,6 @@ function Restore-SandboxRelease {
         } finally { $backup.Dispose() }
     }
     Start-SandboxSite $Target.SiteName
-    Wait-SandboxHealth $Target.SiteName
 }
 
 function Complete-SandboxDeployment {
@@ -574,7 +593,7 @@ function Complete-SandboxDeployment {
     try {
         $upload = Get-SandboxUpload $UploadId
         $target = Get-SandboxTarget $upload.SiteName
-        $null = Get-SandboxHealthUrl $target.SiteName
+        Assert-SandboxDeployableSite $target.SiteName
         $siteLock = Open-SandboxLock "$($target.SiteName).lock"
         try {
             Assert-SandboxUnblocked $target.SiteName
@@ -587,11 +606,6 @@ function Complete-SandboxDeployment {
                 $expanded = Join-Path $upload.Directory 'expanded'
                 Expand-SandboxPackage $package $expanded
                 Assert-SandboxPayload $target $expanded
-                if ((Get-WebsiteState -Name $target.SiteName).Value -ne 'Started' -or
-                    (Get-WebAppPoolState -Name $target.SiteName).Value -ne 'Started') {
-                    throw 'Deployment requires an already started, healthy baseline.'
-                }
-                Wait-SandboxHealth $target.SiteName
                 $backupName = $target.SiteName + '_' + [datetime]::UtcNow.ToString('yyyy-MM-dd_HHmmss') + '.zip'
                 $backupPath = Join-Path ([IO.Path]::GetDirectoryName($target.Path)) $backupName
                 if (Test-Path -LiteralPath $backupPath) { throw 'Backup timestamp collision; content untouched.' }
@@ -612,7 +626,6 @@ function Complete-SandboxDeployment {
                     Write-SandboxJournal $journalPath $journal
                     Set-SandboxContent $expanded $target.Path
                     Start-SandboxSite $target.SiteName
-                    Wait-SandboxHealth $target.SiteName
                 } catch {
                     $deploymentFailure = $_
                     try { Restore-SandboxRelease $target $upload $journal }
@@ -620,17 +633,17 @@ function Complete-SandboxDeployment {
                         throw "Deployment failed: $($deploymentFailure.Exception.Message). Recovery failed: $($_.Exception.Message). Retain upload $UploadId, backup and journal; site remains blocked."
                     }
                     try { Clear-SandboxJournal $journalPath }
-                    catch { throw "Deployment failed: $($deploymentFailure.Exception.Message). Recovery health passed; journal cleanup failed: $($_.Exception.Message). Site remains blocked." }
-                    throw "Deployment failed: $($deploymentFailure.Exception.Message). Previous release restored and HTTPS health verified; upload retained."
+                    catch { throw "Deployment failed: $($deploymentFailure.Exception.Message). Previous release restored and IIS started; journal cleanup failed: $($_.Exception.Message). Site remains blocked." }
+                    throw "Deployment failed: $($deploymentFailure.Exception.Message). Previous release restored and IIS started; upload retained."
                 }
                 $journal.Phase = 'Committed'
                 Write-SandboxJournal $journalPath $journal
                 try { Clear-SandboxJournal $journalPath }
-                catch { throw "Deployment health passed but journal cleanup failed: $($_.Exception.Message). Retain upload and backup; site remains blocked." }
+                catch { throw "Deployment completed and IIS started, but journal cleanup failed: $($_.Exception.Message). Retain upload and backup; site remains blocked." }
                 return [pscustomobject]@{
                     SiteName = $target.SiteName; Destination = $target.Path; Backup = $backupPath
-                    State = 'Started'; HealthStatus = 200; HealthUrl = Get-SandboxHealthUrl $target.SiteName
-                    HealthVerified = $true; ModuleVersion = '2.0.0'; UploadId = $UploadId
+                    State = 'Started'; HealthCheckMode = 'Deferred'; HealthVerified = $false
+                    ModuleVersion = '2.1.0'; UploadId = $UploadId
                 }
             } finally { $package.Dispose() }
         } finally { $siteLock.Dispose() }
@@ -644,7 +657,7 @@ function Repair-SandboxDeployment {
         $upload = Get-SandboxUpload $UploadId -AllowExpired -Operator
         if ($upload.SiteName -cne $SiteName) { throw 'Recovery upload/site mismatch.' }
         $target = Get-SandboxTarget $SiteName
-        $null = Get-SandboxHealthUrl $SiteName
+        Assert-SandboxDeployableSite $SiteName
         $siteLock = Open-SandboxLock "$SiteName.lock"
         try {
             $journalPath = Join-Path (Get-SandboxStagingRoot) "$SiteName.recovery.json"
@@ -665,7 +678,10 @@ function Repair-SandboxDeployment {
             }
             Restore-SandboxRelease $target $upload $journal
             Clear-SandboxJournal $journalPath
-            return [pscustomobject]@{ SiteName = $SiteName; UploadId = $UploadId; RecoveryHealthVerified = $true }
+            return [pscustomobject]@{
+                SiteName = $SiteName; UploadId = $UploadId; State = 'Started'
+                HealthCheckMode = 'Deferred'; ModuleVersion = '2.1.0'
+            }
         } finally { $siteLock.Dispose() }
     } finally { $uploadLock.Dispose() }
 }

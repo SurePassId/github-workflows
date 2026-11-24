@@ -14,7 +14,7 @@ inputs:
     description: alpha, dev, or sandbox
     required: true
   app-name:
-    description: api, mfa, push, oidc, or oidc-client
+    description: api, mfa, saml2, push, oidc, or oidc-client
     required: true
   source-path:
     description: Published application directory
@@ -26,14 +26,15 @@ inputs:
     description: Numeric GitHub run ID followed by hyphen and numeric attempt
     required: true
   keep-list:
-    description: Must be empty for API/MFA (secure provisioning); other apps validate intent only during upload-only validation
+    description: Must be empty for API/MFA/SAML2 (repo-based config); other apps validate intent only during upload-only validation
     required: false
     default: ''
   health-check-url:
-    description: Required HTTPS health URL on app-env.surepassid.com; must match the server-qualified endpoint for API/MFA deployments
-    required: true
+    description: Optional HTTPS health URL on app-env.surepassid.com (HTTP health checks are currently deferred)
+    required: false
+    default: ''
   upload-only:
-    description: Set to 'true' to validate upload and cleanup without deploying; 'false' (default) performs health-verified v2 deployment for API/MFA
+    description: Set to 'true' to validate upload and cleanup without deploying; 'false' (default) performs transactional v2.1 deployment for API/MFA/SAML2
     required: false
     default: 'false'
 runs:

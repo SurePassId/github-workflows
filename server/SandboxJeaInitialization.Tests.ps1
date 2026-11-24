@@ -6,7 +6,7 @@ $originalModulePath = $env:PSModulePath
 try {
     $modulePath = Join-Path $fixture 'Modules'
     $moduleRoot = Join-Path $modulePath 'SandboxDeployment'
-    $versionPath = Join-Path $moduleRoot '2.0.0'
+    $versionPath = Join-Path $moduleRoot '2.1.0'
     $rolesPath = Join-Path $moduleRoot 'RoleCapabilities'
     $null = [IO.Directory]::CreateDirectory($versionPath)
     $null = [IO.Directory]::CreateDirectory($rolesPath)
@@ -23,7 +23,7 @@ try {
     $roleFilter = [Func[string, bool]] { param($principalName) return $principalName -ceq 'Fixture-Principal' }
     foreach ($mode in @('RequiredVersion', 'ExactPath')) {
         $moduleExpression = if ($mode -eq 'RequiredVersion') {
-            "@{ ModuleName = '$manifestPath'; RequiredVersion = '2.0.0' }"
+            "@{ ModuleName = '$manifestPath'; RequiredVersion = '2.1.0' }"
         } else {
             "'$manifestPath'"
         }
@@ -40,7 +40,7 @@ try {
         if ($mode -eq 'ExactPath') {
             $roleContent = [IO.File]::ReadAllText(
                 (Join-Path $PSScriptRoot 'SandboxDeployment\RoleCapabilities\SurePassIDSandboxDeployer.psrc')).Replace(
-                    'C:\Program Files\WindowsPowerShell\Modules\SandboxDeployment\2.0.0\SandboxDeployment.psd1',
+                    'C:\Program Files\WindowsPowerShell\Modules\SandboxDeployment\2.1.0\SandboxDeployment.psd1',
                     $manifestPath)
         }
         [IO.File]::WriteAllText($rolePath, $roleContent)

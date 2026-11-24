@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
-    [Parameter(Mandatory)][ValidatePattern('^(api|mfa)-(alpha|dev|sandbox)\.surepassid\.com$')][string]$SiteName,
+    [Parameter(Mandatory)][ValidatePattern('^(api|mfa|saml2)-(alpha|dev|sandbox)\.surepassid\.com$')][string]$SiteName,
     [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{32}$')][string]$UploadId,
     [Parameter(Mandatory)][ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedJournalSha256
 )
@@ -12,8 +12,8 @@ $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.Wind
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Local elevated operator recovery is required.'
 }
-if ($PSCmdlet.ShouldProcess($SiteName, 'Restore previous release if replacement began, verify HTTPS health, and clear the recovery journal')) {
-    $modulePath = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules\SandboxDeployment\2.0.0\SandboxDeployment.psd1'
+if ($PSCmdlet.ShouldProcess($SiteName, 'Restore previous release if replacement began, restart IIS, and clear the recovery journal')) {
+    $modulePath = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules\SandboxDeployment\2.1.0\SandboxDeployment.psd1'
     $module = Import-Module -Name $modulePath -Force -PassThru -ErrorAction Stop
     & $module {
         param($Name, $Identifier, $JournalHash)

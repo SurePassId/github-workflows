@@ -37,9 +37,12 @@ try {
                 $script:stopFailed = $true
                 throw 'Partial stop fault.'
             }
-            if ($script:fault -eq 'start' -and $State -eq 'Started' -and -not $script:startFailed) {
+            if ($script:fault -in @('start', 'rollback-cleanup') -and $State -eq 'Started' -and -not $script:startFailed) {
                 $script:startFailed = $true
                 throw 'Startup fault.'
+            }
+            if ($script:fault -eq 'start-all' -and $State -eq 'Started') {
+                throw 'Persistent startup fault.'
             }
             if ($script:fault -eq 'space-after-stop' -and $Kind -eq 'apppool' -and $State -eq 'Stopped') { $script:freeBytes = 1 }
             if ($Kind -eq 'site') { $script:siteState = $State } else { $script:poolState = $State }
@@ -93,7 +96,7 @@ try {
             & $script:originals['Expand-SandboxPackage'] $Stream $Destination
         }
         function script:New-TestArchive {
-            param([string[]]$Names = @('web.config', 'bin/SurePassAdmin.dll', 'bin/site.lic'), [switch]$Link)
+            param([string[]]$Names = @('web.config', 'bin/SurePassAdmin.dll'), [switch]$Link)
             $stream = [IO.MemoryStream]::new()
             $archive = [IO.Compression.ZipArchive]::new($stream, 'Create', $true)
             try {
@@ -106,24 +109,17 @@ try {
                             $text = 'new-release'
                             if ($name -eq 'web.config') {
                                 if ($script:siteName -like 'api-*') {
-                                    $text = '<configuration><system.webServer><aspNetCore><environmentVariables><environmentVariable name="ASPNETCORE_ENVIRONMENT" value="mfa-sandbox" /></environmentVariables></aspNetCore></system.webServer></configuration>'
+                                    $envName = ($script:siteName -split '[.-]')[1]
+                                    $text = "<configuration><system.webServer><aspNetCore><environmentVariables><environmentVariable name=`"ASPNETCORE_ENVIRONMENT`" value=`"mfa-$envName`" /></environmentVariables></aspNetCore></system.webServer></configuration>"
+                                } elseif ($script:siteName -like 'saml2-*') {
+                                    $text = '<configuration><appSettings><add key="Connection.Server" value="db-dev" /></appSettings></configuration>'
                                 } else {
-                                    $text = '<configuration><appSettings><add key="MfaServerLicence.LicenseCode" value="" /><add key="MfaServerLicence.FilePath" value="' +
-                                        [Security.SecurityElement]::Escape([IO.Path]::Combine($script:site, 'bin')) +
-                                        '" /><add key="MfaServerLicence.Filename" value="site.lic" /></appSettings></configuration>'
+                                    $text = '<configuration><appSettings><add key="MfaServerLicence.FilePath" value="E:\shared_licenses\dev" /><add key="MfaServerLicence.Filename" value="site.lic" /></appSettings></configuration>'
                                 }
-                            } elseif ($name -in @('appsettings.json', 'appsettings.mfa-sandbox.json')) {
+                            } elseif ($name -match '^appsettings(\.[^.]+)?\.json$') {
                                 $text = '{}'
                             } elseif ($name -eq 'logging.config') {
                                 $text = '<log4net />'
-                            } elseif ($name -eq 'appsettings.local.json') {
-                                $text = @{
-                                    ConnectionStrings = @{ MFA = 'inert-test-database' }
-                                    AppSettings = @{ MfaServerLicense = @{
-                                        FilePath = $script:site; Filename = 'site.lic'
-                                        ValidationKey = 'inert-test-key'; LicenseCode = ''
-                                    } }
-                                } | ConvertTo-Json -Depth 10
                             }
                             $bytes = [Text.Encoding]::UTF8.GetBytes($text)
                             $output.Write($bytes, 0, $bytes.Length)
@@ -135,7 +131,7 @@ try {
             return ,$stream
         }
         function script:New-TestUpload {
-            param([string[]]$Names = @('web.config', 'bin/SurePassAdmin.dll', 'bin/site.lic'))
+            param([string[]]$Names = @('web.config', 'bin/SurePassAdmin.dll'))
             $identifier = New-SandboxUpload -SiteName $script:siteName
             $stream = New-TestArchive -Names $Names
             try {
@@ -201,12 +197,17 @@ try {
             Assert-Test (-not (Get-Module SandboxDeployment).ExportedFunctions.ContainsKey('Repair-SandboxDeployment')) 'Recovery is not a JEA command.'
             $role = Import-PowerShellDataFile -LiteralPath (Join-Path (Get-Module SandboxDeployment).ModuleBase 'RoleCapabilities\SurePassIDSandboxDeployer.psrc')
             Assert-Test ($role.ModulesToImport.Count -eq 1 -and $role.ModulesToImport[0] -ceq
-                'C:\Program Files\WindowsPowerShell\Modules\SandboxDeployment\2.0.0\SandboxDeployment.psd1') 'Role pins the exact versioned manifest without constrained RequiredVersion initialization.'
+                'C:\Program Files\WindowsPowerShell\Modules\SandboxDeployment\2.1.0\SandboxDeployment.psd1') 'Role pins the exact versioned manifest without constrained RequiredVersion initialization.'
             Assert-Test ($role.VisibleFunctions.Count -eq 4 -and $role.VisibleExternalCommands.Count -eq 0) 'No role expansion.'
         }
-        Test-Case 'actual IIS target checks reject path pool child app and virtual directory mismatches' {
+        Test-Case 'actual IIS target checks allow known MFA virtual directories and reject unknown virtual directories or mismatches' {
             function Import-Module { param($Name, $ErrorAction) }
-            function Get-SandboxSiteMap { return @{ 'mfa-sandbox.surepassid.com' = $script:site } }
+            function Get-SandboxSiteMap {
+                return @{
+                    'mfa-dev.surepassid.com' = $script:site
+                    'saml2-dev.surepassid.com' = $script:site
+                }
+            }
             function Get-Item {
                 param($LiteralPath, [switch]$Force, $ErrorAction)
                 if ($LiteralPath -like 'IIS:*') {
@@ -217,59 +218,80 @@ try {
             function Get-WebApplication {
                 param($Site)
                 if ($script:targetFault -eq 'child' -or ($script:targetFault -eq 'shared-child' -and -not $Site)) {
-                    return @{ Path = '/child'; ApplicationPool = 'mfa-sandbox.surepassid.com' }
+                    return @{ Path = '/child'; ApplicationPool = $script:mappedPool }
                 }
             }
             function Get-WebVirtualDirectory {
                 param($Site)
-                if ($script:targetFault -eq 'virtual') { return @{ Path = '/virtual' } }
-                return @{ Path = '/' }
+                if ($script:targetFault -eq 'virtual') { return @{ Path = '/virtual'; PhysicalPath = $script:site } }
+                if ($script:targetFault -eq 'mfa-vdir-wrong-path') {
+                    return @(
+                        @{ Path = '/'; PhysicalPath = $script:site },
+                        @{ Path = '/.well-known'; PhysicalPath = 'E:\wrong\path' }
+                    )
+                }
+                if ($script:targetFault -eq 'mfa-vdirs') {
+                    return @(
+                        @{ Path = '/'; PhysicalPath = $script:site },
+                        @{ Path = '/.well-known'; PhysicalPath = 'E:\iis_sites\well-known-common\dev' },
+                        @{ Path = '/oath-ota-provision'; PhysicalPath = [IO.Path]::Combine($script:site, 'oath-ota-provision') },
+                        @{ Path = '/otp-push-ota-provision'; PhysicalPath = [IO.Path]::Combine($script:site, 'otp-push-ota-provision') },
+                        @{ Path = '/push-ota-provision'; PhysicalPath = [IO.Path]::Combine($script:site, 'push-ota-provision') }
+                    )
+                }
+                return @{ Path = '/'; PhysicalPath = $script:site }
             }
             function Get-Website {
-                if ($script:targetFault -eq 'shared') { return @{ Name = 'other'; ApplicationPool = 'mfa-sandbox.surepassid.com' } }
+                if ($script:targetFault -eq 'shared') { return @{ Name = 'other'; ApplicationPool = 'mfa-dev.surepassid.com' } }
             }
             $script:mappedPath = $script:site
-            $script:mappedPool = 'mfa-sandbox.surepassid.com'
+            $script:mappedPool = 'mfa-dev.surepassid.com'
+            $script:targetFault = 'mfa-vdirs'
+            $target = & $script:originals['Get-SandboxTarget'] 'mfa-dev.surepassid.com'
+            Assert-Test ($target.Path -ceq $script:site) 'Approved MFA virtual directories accepted.'
+            $script:mappedPool = 'saml2-dev.surepassid.com'
             $script:targetFault = ''
-            $target = & $script:originals['Get-SandboxTarget'] 'mfa-sandbox.surepassid.com'
-            Assert-Test ($target.Path -ceq $script:site) 'Exact approved mapping accepted.'
-            foreach ($targetFault in @('child', 'virtual', 'shared', 'shared-child', 'path', 'pool')) {
+            $samlTarget = & $script:originals['Get-SandboxTarget'] 'saml2-dev.surepassid.com'
+            Assert-Test ($samlTarget.Path -ceq $script:site) 'Approved SAML2 mapping accepted.'
+            $script:targetFault = 'mfa-vdirs'
+            Assert-Failure { & $script:originals['Get-SandboxTarget'] 'saml2-dev.surepassid.com' } 'approved mapping'
+            foreach ($targetFault in @('child', 'virtual', 'mfa-vdir-wrong-path', 'shared', 'shared-child', 'path', 'pool')) {
                 $script:targetFault = $targetFault
                 $script:mappedPath = $script:site
-                $script:mappedPool = 'mfa-sandbox.surepassid.com'
+                $script:mappedPool = 'mfa-dev.surepassid.com'
                 if ($targetFault -eq 'path') { $script:mappedPath = Join-Path $script:fixture 'wrong' }
                 if ($targetFault -eq 'pool') { $script:mappedPool = 'other' }
-                Assert-Failure { & $script:originals['Get-SandboxTarget'] 'mfa-sandbox.surepassid.com' } 'approved mapping'
+                Assert-Failure { & $script:originals['Get-SandboxTarget'] 'mfa-dev.surepassid.com' } 'approved mapping'
             }
             Assert-Failure { & $script:originals['Get-SandboxTarget'] 'mfa-prod.surepassid.com' } 'not authorized'
         }
-        Test-Case 'healthy completion uses real ZIP, payload checks, backup and content replacement' {
+        Test-Case 'completion uses real ZIP, payload checks, backup, content replacement and IIS start with deferred health check' {
             $identifier = New-TestUpload
             $result = Complete-SandboxDeployment $identifier $script:packageHash
-            Assert-Test ($result.HealthVerified -and $result.HealthStatus -eq 200 -and $result.ModuleVersion -ceq '2.0.0') 'Health-qualified receipt.'
-            Assert-Test ($script:healthCalls -eq 2) 'Baseline and new release health.'
+            Assert-Test ($result.State -ceq 'Started' -and $result.HealthCheckMode -ceq 'Deferred' -and -not $result.HealthVerified -and $result.ModuleVersion -ceq '2.1.0') 'Deferred-health v2.1.0 receipt.'
+            Assert-Test ($script:healthCalls -eq 0) 'HTTP health probes deferred.'
             Assert-Test ($script:events.IndexOf('workers-drained') -lt $script:events.IndexOf('backup')) 'Drain precedes backup.'
             Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\SurePassAdmin.dll')) -ceq 'new-release') 'New code deployed.'
-            Assert-Test (-not (Test-Path -LiteralPath (Get-TestJournal))) 'Successful health cleared journal.'
+            Assert-Test (-not (Test-Path -LiteralPath (Get-TestJournal))) 'Successful deployment cleared journal.'
             Assert-Test (Test-Path -LiteralPath $result.Backup) 'Backup retained after success.'
             Remove-SandboxUpload $identifier
             Assert-Test (-not (Test-Path -LiteralPath (Join-Path $script:staging $identifier))) 'Safe cleanup after terminal success.'
             Assert-Test (Test-Path -LiteralPath $result.Backup) 'Upload cleanup never deletes external backup.'
         }
-        foreach ($fault in @('new-health', 'replace', 'partial-stop', 'backup', 'start', 'journal-replace', 'space-after-stop', 'workers')) {
-            Test-Case "recover original code/config/license after $fault" {
+        foreach ($fault in @('replace', 'partial-stop', 'backup', 'start', 'journal-replace', 'space-after-stop', 'workers')) {
+            Test-Case "recover original release after $fault" {
                 $identifier = New-TestUpload
                 $script:fault = $fault
-                Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Previous release restored and HTTPS health verified'
+                Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Previous release restored and IIS started'
                 Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\SurePassAdmin.dll')) -ceq 'old-code') 'Original code restored.'
-                Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\site.lic')) -ceq 'old-mutable-license') 'Original mutable license restored, not retained from new payload.'
+                Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\site.lic')) -ceq 'old-mutable-license') 'Original mutable license restored.'
                 Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'web.config')) -ceq '<configuration />') 'Original configuration restored.'
                 Assert-Test (-not (Test-Path -LiteralPath (Get-TestJournal))) 'Verified recovery unblocks site.'
                 Assert-Test ($script:siteState -eq 'Started' -and $script:poolState -eq 'Started') 'Partial IIS state recovered.'
                 Assert-Test (Test-Path -LiteralPath (Join-Path $script:staging $identifier)) 'Failure retains owned upload for inspection.'
             }
         }
-        foreach ($fault in @('all-health', 'restore')) {
+        foreach ($fault in @('start-all', 'restore')) {
             Test-Case "failed recovery $fault durably blocks create append complete and remove" {
                 $identifier = New-TestUpload
                 $script:fault = $fault
@@ -281,7 +303,7 @@ try {
                 Assert-Failure { Remove-SandboxUpload $identifier } 'unresolved deployment journal'
                 $script:fault = ''
                 $result = Repair-SandboxDeployment 'mfa-sandbox.surepassid.com' $identifier (Get-TestJournalHash)
-                Assert-Test $result.RecoveryHealthVerified 'Operator recovery health verified.'
+                Assert-Test ($result.State -ceq 'Started' -and $result.ModuleVersion -ceq '2.1.0') 'Operator recovery restarted IIS.'
                 Assert-Test (-not (Test-Path -LiteralPath (Get-TestJournal))) 'Only verified recovery cleared journal.'
                 Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\site.lic')) -ceq 'old-mutable-license') 'Operator restores consistent release.'
             }
@@ -295,10 +317,10 @@ try {
             $null = Repair-SandboxDeployment 'mfa-sandbox.surepassid.com' $identifier (Get-TestJournalHash)
             Assert-Test ([IO.File]::ReadAllText((Join-Path $script:site 'bin\SurePassAdmin.dll')) -ceq 'old-code') 'Interrupted transaction rolled back deliberately.'
         }
-        Test-Case 'successful health followed by cleanup failure is not reported as success' {
+        Test-Case 'successful deploy followed by cleanup failure is not reported as success' {
             $identifier = New-TestUpload
             $script:fault = 'cleanup'
-            Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Deployment health passed but journal cleanup failed'
+            Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Deployment completed and IIS started, but journal cleanup failed'
             Assert-Test (Test-Path -LiteralPath (Get-TestJournal)) 'Committed journal remains to block a later deployment.'
             Assert-Failure { Remove-SandboxUpload $identifier } 'unresolved'
             $script:fault = ''
@@ -307,11 +329,11 @@ try {
         Test-Case 'rollback cleanup failure reports original failure and retains the block' {
             $identifier = New-TestUpload
             $script:fault = 'rollback-cleanup'
-            Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Deployment failed:.*Health probe fault.*Recovery health passed; journal cleanup failed'
+            Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Deployment failed:.*Startup fault.*Previous release restored and IIS started; journal cleanup failed'
             Assert-Test (Test-Path -LiteralPath (Get-TestJournal)) 'Recovered but unresolved cleanup remains blocked.'
         }
-        foreach ($fault in @('baseline-health', 'extract', 'journal-new')) {
-            Test-Case "pre-stop $fault leaves healthy release untouched without a journal" {
+        foreach ($fault in @('extract', 'journal-new')) {
+            Test-Case "pre-stop $fault leaves release untouched without a journal" {
                 $identifier = New-TestUpload
                 $script:fault = $fault
                 Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'fault'
@@ -324,13 +346,20 @@ try {
             Assert-Failure { Complete-SandboxDeployment $identifier ('A' * 64) } 'Package hash mismatch'
             Assert-Test (-not $script:events.Contains('site/Stopped')) 'No IIS mutation.'
         }
-        Test-Case 'API deployment validates the real staged JSON license environment and assembly' {
-            $script:siteName = 'api-sandbox.surepassid.com'
-            $identifier = New-TestUpload -Names @('web.config', 'SurePassIdApiServer.dll', 'site.lic', 'logging.config',
-                'appsettings.json', 'appsettings.mfa-sandbox.json', 'appsettings.local.json')
+        Test-Case 'API deployment succeeds with repo config and Key Vault (no appsettings.local.json or site.lic required)' {
+            $script:siteName = 'api-dev.surepassid.com'
+            $identifier = New-TestUpload -Names @('web.config', 'SurePassIdApiServer.dll', 'logging.config',
+                'appsettings.json', 'appsettings.mfa-dev.json')
             $result = Complete-SandboxDeployment $identifier $script:packageHash
-            Assert-Test ($result.HealthVerified -and $result.HealthUrl -ceq 'https://api-sandbox.surepassid.com/status') 'API route health-qualified.'
+            Assert-Test ($result.State -ceq 'Started' -and $result.ModuleVersion -ceq '2.1.0') 'API deployment succeeded.'
             Assert-Test ([IO.File]::Exists((Join-Path $script:site 'SurePassIdApiServer.dll'))) 'New API assembly.'
+        }
+        Test-Case 'SAML2 deployment validates web.config and SurePassSSOIdentityProvider.dll without site.lic' {
+            $script:siteName = 'saml2-dev.surepassid.com'
+            $identifier = New-TestUpload -Names @('web.config', 'bin/SurePassSSOIdentityProvider.dll')
+            $result = Complete-SandboxDeployment $identifier $script:packageHash
+            Assert-Test ($result.State -ceq 'Started' -and $result.ModuleVersion -ceq '2.1.0') 'SAML2 deployment succeeded.'
+            Assert-Test ([IO.File]::Exists((Join-Path $script:site 'bin\SurePassSSOIdentityProvider.dll'))) 'New SAML2 assembly.'
         }
         Test-Case 'backup collision refuses deployment before a journal or IIS stop' {
             $identifier = New-TestUpload
@@ -364,19 +393,20 @@ try {
             $script:freeBytes = 64MB + 500
             Assert-SandboxCapacity 'E:\isolated-site' 100 200
         }
-        foreach ($missing in @('web.config', 'bin/site.lic', 'bin/SurePassAdmin.dll')) {
+        foreach ($missing in @('web.config', 'bin/SurePassAdmin.dll')) {
             Test-Case "missing required payload file $missing never falls back to live" {
-                $names = @('web.config', 'bin/SurePassAdmin.dll', 'bin/site.lic') | Where-Object { $_ -cne $missing }
+                $names = @('web.config', 'bin/SurePassAdmin.dll') | Where-Object { $_ -cne $missing }
                 $identifier = New-TestUpload -Names $names
-                Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Invalid staged XML|required staged assembly|Required staged assembly'
+                Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Invalid staged XML|Required staged assembly'
                 Assert-Test (-not $script:events.Contains('site/Stopped')) 'No live-file fallback.'
             }
         }
-        Test-Case 'stopped baseline is rejected rather than starting an intentionally stopped site' {
+        Test-Case 'stopped site can be deployed and started when health check is deferred' {
             $identifier = New-TestUpload
             $script:siteState = 'Stopped'
-            Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'already started'
-            Assert-Test (-not $script:events.Count) 'No IIS changes.'
+            $script:poolState = 'Stopped'
+            $result = Complete-SandboxDeployment $identifier $script:packageHash
+            Assert-Test ($result.State -ceq 'Started' -and $script:siteState -eq 'Started' -and $script:poolState -eq 'Started') 'Stopped site deployed and started.'
         }
         Test-Case 'wrong caller cannot append complete or remove another upload' {
             $identifier = New-TestUpload
@@ -467,7 +497,7 @@ try {
                 $destination = Join-Path $script:fixture 'bounded-extract'
                 try { Expand-SandboxPackage $stream $destination }
                 catch {
-                    Assert-Test ($_.Exception.Message -match 'exceeded.*length|length mismatch|corrupt|invalid') 'Framework must reject excess data or bound its own entry stream.'
+                    Assert-Test ($_.Exception.Message -match 'exceeded.*length|length mismatch|corrupt|invalid|CRC32') 'Framework must reject excess data or bound its own entry stream.'
                 }
                 Assert-Test ((Get-Item -LiteralPath (Join-Path $destination 'payload.txt')).Length -le 1) 'No runtime writes more than the validated expanded length.'
             } finally { $stream.Dispose() }
@@ -480,7 +510,7 @@ try {
         }
         Test-Case 'recovery rejects stale journal hash and tampered backup without clearing block' {
             $identifier = New-TestUpload
-            $script:fault = 'all-health'
+            $script:fault = 'start-all'
             Assert-Failure { Complete-SandboxDeployment $identifier $script:packageHash } 'Recovery failed'
             $script:fault = ''
             Assert-Failure { Repair-SandboxDeployment 'mfa-sandbox.surepassid.com' $identifier ('A' * 64) } 'Journal changed'
@@ -516,11 +546,13 @@ try {
             Assert-Failure { Repair-SandboxDeployment $script:siteName $identifier (Get-TestJournalHash) } 'Invalid recovery journal'
             Assert-Test (-not $script:events.Contains('replace')) 'Invalid metadata never drives filesystem replacement.'
         }
-        Test-Case 'unqualified app health routes fail closed, not a caller-selected URL' {
+        Test-Case 'unqualified app routes fail closed, not a caller-selected URL' {
             foreach ($siteName in @('oidc-alpha.surepassid.com', 'push-dev.surepassid.com', 'api-prod.surepassid.com', 'api-sandbox.surepassid.com.evil')) {
-                Assert-Failure { Get-SandboxHealthUrl $siteName } 'not health-qualified'
+                Assert-Failure { Get-SandboxHealthUrl $siteName } 'not enabled'
+                Assert-Failure { Assert-SandboxDeployableSite $siteName } 'not enabled'
             }
             Assert-Test ((Get-SandboxHealthUrl 'api-alpha.surepassid.com') -ceq 'https://api-alpha.surepassid.com/status') 'Pinned API health route.'
+            Assert-Test ((Get-SandboxHealthUrl 'saml2-dev.surepassid.com') -ceq 'https://saml2-dev.surepassid.com/server/HealthCheck.aspx') 'Pinned SAML2 health route.'
         }
         Test-Case 'archive thresholds accept exact limits and reject one byte or entry beyond' {
             Assert-SandboxArchiveLimits 4GB 8GB 100000
