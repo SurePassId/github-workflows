@@ -48,7 +48,7 @@ try {
             if ($Kind -eq 'site') { $script:siteState = $State } else { $script:poolState = $State }
         }
         function script:Invoke-SandboxAppCmd {
-            param($Arguments)
+            param($Arguments, [switch]$AllowEmptyList)
             $script:events.Add('workers-drained')
             if ($script:fault -eq 'workers') { return '<appcmd><WP /></appcmd>' }
             return '<appcmd />'
@@ -545,6 +545,36 @@ try {
             Write-SandboxJournal (Get-TestJournal) $journal
             Assert-Failure { Repair-SandboxDeployment $script:siteName $identifier (Get-TestJournalHash) } 'Invalid recovery journal'
             Assert-Test (-not $script:events.Contains('replace')) 'Invalid metadata never drives filesystem replacement.'
+        }
+        Test-Case 'worker drain accepts appcmd exit 1 with an empty list and rejects real failures' {
+            $originalAppCmd = (Get-Item Function:\Invoke-SandboxAppCmd).ScriptBlock
+            $originalPath = $script:AppCmdPath
+            Set-Item Function:\Invoke-SandboxAppCmd $script:originals['Invoke-SandboxAppCmd']
+            try {
+                function script:Set-FakeAppCmd {
+                    param([string[]]$Lines, [int]$ExitCode)
+                    $outputPath = Join-Path $script:fixture 'appcmd-output.txt'
+                    [IO.File]::WriteAllLines($outputPath, $Lines)
+                    $script:AppCmdPath = Join-Path $script:fixture 'appcmd.cmd'
+                    [IO.File]::WriteAllText($script:AppCmdPath,
+                        "@type `"$outputPath`"`r`n@exit /b $ExitCode`r`n")
+                }
+                # Exact output observed from sandbox-app when the pool has no worker processes.
+                Set-FakeAppCmd @('<?xml version="1.0" encoding="UTF-8"?>', '<appcmd>', '</appcmd>') 1
+                Stop-SandboxSite 'mfa-sandbox.surepassid.com'
+                Assert-Test ($script:events.Contains('site/Stopped') -and $script:events.Contains('apppool/Stopped')) 'Site and pool stopped before drain.'
+
+                Assert-Failure { Invoke-SandboxAppCmd @('stop', 'site', 'x') } 'appcmd failed \(exit 1\)'
+
+                Set-FakeAppCmd @('ERROR ( message:Unexpected failure. )') 1
+                Assert-Failure { Stop-SandboxSite 'mfa-sandbox.surepassid.com' } 'Unexpected worker inventory response'
+
+                Set-FakeAppCmd @('<?xml version="1.0" encoding="UTF-8"?>', '<appcmd>', '</appcmd>') 2
+                Assert-Failure { Stop-SandboxSite 'mfa-sandbox.surepassid.com' } 'appcmd failed \(exit 2\)'
+            } finally {
+                $script:AppCmdPath = $originalPath
+                Set-Item Function:\Invoke-SandboxAppCmd $originalAppCmd
+            }
         }
         Test-Case 'unqualified app routes fail closed, not a caller-selected URL' {
             foreach ($siteName in @('oidc-alpha.surepassid.com', 'push-dev.surepassid.com', 'api-prod.surepassid.com', 'api-sandbox.surepassid.com.evil')) {

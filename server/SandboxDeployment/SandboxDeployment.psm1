@@ -412,10 +412,16 @@ function Wait-SandboxHealth {
     throw "Application health failed (exact HTTPS 200 required): $lastResult. Response bodies are not collected."
 }
 
+$script:AppCmdPath = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
+
 function Invoke-SandboxAppCmd {
-    param([string[]]$Arguments)
-    $output = & "$env:SystemRoot\System32\inetsrv\appcmd.exe" @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "appcmd failed (exit $LASTEXITCODE)." }
+    param([string[]]$Arguments, [switch]$AllowEmptyList)
+    $output = & $script:AppCmdPath @Arguments
+    $exitCode = $LASTEXITCODE
+    # appcmd list returns exit code 1 when nothing matches; the caller still validates the XML.
+    if ($exitCode -ne 0 -and -not ($AllowEmptyList -and $exitCode -eq 1)) {
+        throw "appcmd failed (exit $exitCode)."
+    }
     return $output
 }
 
@@ -444,8 +450,15 @@ function Stop-SandboxSite {
     Set-SandboxIisState 'apppool' $SiteName 'Stopped'
     $deadline = [datetime]::UtcNow.AddSeconds(30)
     do {
-        $workerXml = [xml]((Invoke-SandboxAppCmd @('list', 'wp', "/apppool.name:$SiteName", '/xml')) -join "`n")
-        if ($workerXml.DocumentElement.Name -cne 'appcmd') { throw 'Unexpected worker inventory response.' }
+        $workerText = (Invoke-SandboxAppCmd @('list', 'wp', "/apppool.name:$SiteName", '/xml') -AllowEmptyList) -join "`n"
+        try {
+            $workerXml = [xml]$workerText
+        } catch {
+            throw 'Unexpected worker inventory response.'
+        }
+        if ($null -eq $workerXml.DocumentElement -or $workerXml.DocumentElement.Name -cne 'appcmd') {
+            throw 'Unexpected worker inventory response.'
+        }
         if ($workerXml.SelectNodes('/appcmd/WP').Count -eq 0) { return }
         if ([datetime]::UtcNow -ge $deadline) { throw 'Application pool workers did not drain; content untouched.' }
         Start-Sleep -Milliseconds 200
